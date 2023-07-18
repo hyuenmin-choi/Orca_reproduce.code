@@ -102,15 +102,15 @@ class TritonPythonModel:
         output0_config = pb_utils.get_output_config_by_name(model_config, "OUTPUT0")
 
         # Get OUTPUT1 configuration
-        output1_config = pb_utils.get_output_config_by_name(model_config, "OUTPUT1")
+        # output1_config = pb_utils.get_output_config_by_name(model_config, "OUTPUT1")
 
         # Convert Triton types to numpy types
         self.output0_dtype = pb_utils.triton_string_to_numpy(
             output0_config["data_type"]
         )
-        self.output1_dtype = pb_utils.triton_string_to_numpy(
-            output1_config["data_type"]
-        )
+        # self.output1_dtype = pb_utils.triton_string_to_numpy(
+        #     output1_config["data_type"]
+        # )
 
         # Instantiate the PyTorch model
         self.model = model_ours
@@ -138,7 +138,7 @@ class TritonPythonModel:
         """
 
         output0_dtype = self.output0_dtype
-        output1_dtype = self.output1_dtype
+        # output1_dtype = self.output1_dtype
 
         responses = []
 
@@ -150,12 +150,13 @@ class TritonPythonModel:
             # Get INPUT1
             in_1 = pb_utils.get_input_tensor_by_name(request, "INPUT1")
 
-            out_0, out_1 = self.model(in_0, in_1)
+            # out_0, out_1 = self.model(in_0, in_1)
+            out_0= self.model(in_0, in_1)
 
             # Create output tensors. You need pb_utils.Tensor
             # objects to create pb_utils.InferenceResponse.
             out_tensor_0 = pb_utils.Tensor("OUTPUT0", out_0.astype(output0_dtype))
-            out_tensor_1 = pb_utils.Tensor("OUTPUT1", out_1.astype(output1_dtype))
+            # out_tensor_1 = pb_utils.Tensor("OUTPUT1", out_1.astype(output1_dtype))
 
             # Create InferenceResponse. You can set an error here in case
             # there was a problem with handling this inference request.
