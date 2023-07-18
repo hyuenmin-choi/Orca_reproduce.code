@@ -37,7 +37,7 @@ input [
 input [
   {
     name: "INPUT1"
-    data_type: TYPE_FP32
+    data_type: TYPE_INT32
     dims: [ -1 ]
   }
 ]

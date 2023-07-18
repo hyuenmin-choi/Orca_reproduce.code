@@ -25,7 +25,7 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import sys
-import torch
+# import torch
 import numpy as np
 import tritonclient.http as httpclient
 from tritonclient.utils import *
@@ -35,7 +35,7 @@ shape = [4]
 
 with httpclient.InferenceServerClient("localhost:8000") as client:
     input0_data = np.random.rand(*shape).astype(np.float32)
-    input1_data = np.random.rand([1]).astype(np.float32)
+    input1_data = np.random.rand([1]).astype(np.int32)
     inputs = [
         httpclient.InferInput(
             "INPUT0", input0_data.shape, np_to_triton_dtype(input0_data.dtype)
