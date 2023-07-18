@@ -347,7 +347,7 @@ class GPT(nn.Module):
     ):
         super().__init__()
         self.n_positions = n_positions
-        self.token_emb = nn.Embedding(vocab_size, n_embd).to("cuda:5")
+        self.token_emb = nn.Embedding(vocab_size, n_embd)
         self.pos_emb = nn.Embedding(n_positions, n_embd)
 
         self.drop = nn.Dropout(embd_pdrop)
@@ -391,7 +391,7 @@ class GPT(nn.Module):
         
         batch_size, n_tokens = idx.shape
         device = idx.device
-        device = torch.device("cuda:5")
+        device = torch.device("cuda:0")
 
         if n_tokens > self.n_positions:
             raise ValueError("There are too many tokens in the input")
