@@ -402,7 +402,7 @@ class GPT(nn.Module):
 
             request = idx[index]
             request = request.tolist()
-            user_id = user_ids[index]
+            user_id = user_ids[index].item()
 
             if self.eos in request:
                 end = request.index(self.eos)

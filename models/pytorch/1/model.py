@@ -113,7 +113,7 @@ class TritonPythonModel:
         )
 
         # Instantiate the PyTorch model
-        self.add_sub_model = model_ours
+        self.model = model_ours
 
     def execute(self, requests):
         """`execute` must be implemented in every Python model. `execute`
@@ -150,7 +150,7 @@ class TritonPythonModel:
             # Get INPUT1
             in_1 = pb_utils.get_input_tensor_by_name(request, "INPUT1")
 
-            out_0, out_1 = self.add_sub_model(in_0.as_numpy(), in_1.as_numpy())
+            out_0, out_1 = self.model(in_0, in_1)
 
             # Create output tensors. You need pb_utils.Tensor
             # objects to create pb_utils.InferenceResponse.
@@ -165,7 +165,7 @@ class TritonPythonModel:
             # pb_utils.InferenceResponse(
             #    output_tensors=..., TritonError("An error occurred"))
             inference_response = pb_utils.InferenceResponse(
-                output_tensors=[out_tensor_0, out_tensor_1]
+                output_tensors=[out_tensor_0]
             )
             responses.append(inference_response)
 
