@@ -68,6 +68,10 @@ class Scheduler:
             
             batch_size += 1
             request.output_length += 1
+
+        # timer 초과
+        if batch_size == 0:
+            return
         
         print("Batching Done Batch length:", str(max_len))
         input_ids = torch.empty(0, max_len, dtype=torch.int).cuda()
@@ -114,6 +118,7 @@ class Scheduler:
             else:
                 self.pool.put(batch[i])
         
+        # TODO response 처리를 어떻게 할 것인가?
         while True:
             if self.finish.empty():
                 print("Finished Request Empty")
@@ -174,7 +179,7 @@ if __name__ == "__main__":
     scheduler.schedule()
     scheduler.schedule()
     scheduler.schedule()
-    scheduler.schedule() #5 request 2 should be end
+    scheduler.schedule() #5 request2 should be end
     scheduler.schedule()
     scheduler.schedule()
     scheduler.schedule()
