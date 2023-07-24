@@ -29,13 +29,14 @@ import sys
 import numpy as np
 import tritonclient.http as httpclient
 from tritonclient.utils import *
+import time
 
-model_name = "pytorch"
-shape = [4]
+model_name = "encoding"
+shape = [1, 4]
 
 with httpclient.InferenceServerClient("localhost:8000") as client:
-    input0_data = np.random.rand(*shape).astype(np.float32)
-    input1_data = np.random.rand(*[1]).astype(np.int32)
+    input0_data = np.random.randint(0,12312, size=(4,32)).astype(np.int32)
+    input1_data = np.array(range(4)).astype(np.int32)
     inputs = [
         httpclient.InferInput(
             "INPUT0", input0_data.shape, np_to_triton_dtype(input0_data.dtype)
@@ -52,30 +53,47 @@ with httpclient.InferenceServerClient("localhost:8000") as client:
         httpclient.InferRequestedOutput("OUTPUT0"),
     ]
 
+    # acc = 0.0
+    # for z in range(100):
+    start = time.time()
+        # for i in range(128):
+        #     print(f"i is {i}")
     response = client.infer(model_name, inputs, request_id=str(1), outputs=outputs)
+    result1 = response.get_response()
+        # response = client.infer(model_name, inputs, request_id=str(1), outputs=outputs)
+    # end = time.time()
 
-    result = response.get_response()
-    output0_data = response.as_numpy("OUTPUT0")
-    # output1_data = response.as_numpy("OUTPUT1")
+    # print(f"time {end - start}")
+    #     acc += end - start
+    #     result2 = response.get_response()
+    
 
-    # print(
-    #     "INPUT0 ({}) + INPUT1 ({}) = OUTPUT0 ({})".format(
-    #         input0_data, input1_data, output0_data
-    #     )
-    # )
-    # print(
-    #     "INPUT0 ({}) - INPUT1 ({}) = OUTPUT0 ({})".format(
-    #         input0_data, input1_data, output1_data
-    #     )
-    # )
+    # acc = acc/100.0
+    # print(f"avg {acc:.5f} sec")
+    
+    for i in range(127):
+        output0_data = response.as_numpy("OUTPUT0").astype(np.int32)
+        print(output0_data)
+        
+        inputs = [
+            httpclient.InferInput(
+                "INPUT0", output0_data.shape, np_to_triton_dtype(output0_data.dtype)
+            ),
+            httpclient.InferInput(
+                "INPUT1", input1_data.shape, np_to_triton_dtype(input1_data.dtype)
+            ),
+        ]
 
-    # if not np.allclose(input0_data + input1_data, output0_data):
-    #     print("pytorch example error: incorrect sum")
-    #     sys.exit(1)
+        inputs[0].set_data_from_numpy(output0_data)
+        inputs[1].set_data_from_numpy(input1_data)
+        # start = time.time()
+        response = client.infer(model_name, inputs, request_id=str(1), outputs=outputs)
+        result1 = response.get_response()
+    
+    
+    end = time.time()
 
-    # if not np.allclose(input0_data - input1_data, output1_data):
-    #     print("pytorch example error: incorrect difference")
-    #     sys.exit(1)
+    print(f"time {end - start}")
 
     print("PASS: pytorch")
     sys.exit(0)

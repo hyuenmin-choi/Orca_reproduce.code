@@ -31,24 +31,17 @@ import json
 # contains some utility functions for extracting information from model_config
 # and converting Triton input/output types to numpy types.
 import triton_python_backend_utils as pb_utils
+import torch
 from torch import nn
+import numpy as np
 
 from gptadv import GPT
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import copy_model
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
 
-class AddSubNet(nn.Module):
-    """
-    Simple AddSub network in PyTorch. This network outputs the sum and
-    subtraction of the inputs.
-    """
-
-    def __init__(self):
-        super(AddSubNet, self).__init__()
-
-    def forward(self, input0, input1):
-        return (input0 + input1), (input0 - input1)
+from tritonclient.utils import *
+import tritonclient.http as httpclient
 
 
 class TritonPythonModel:
@@ -151,11 +144,13 @@ class TritonPythonModel:
             in_1 = pb_utils.get_input_tensor_by_name(request, "INPUT1")
 
             # out_0, out_1 = self.model(in_0, in_1)
-            out_0= self.model(in_0, in_1)
+            # for i in range(128):
+            #     print(f"i is {i}")
+            out_0= self.model(in_0.as_numpy(), in_1.as_numpy())
 
             # Create output tensors. You need pb_utils.Tensor
             # objects to create pb_utils.InferenceResponse.
-            out_tensor_0 = pb_utils.Tensor("OUTPUT0", out_0.astype(output0_dtype))
+            out_tensor_0 = pb_utils.Tensor("OUTPUT0", np.array(out_0))
             # out_tensor_1 = pb_utils.Tensor("OUTPUT1", out_1.astype(output1_dtype))
 
             # Create InferenceResponse. You can set an error here in case
@@ -169,6 +164,9 @@ class TritonPythonModel:
                 output_tensors=[out_tensor_0]
             )
             responses.append(inference_response)
+
+            #some trick for auto-regression
+           
 
         # You should return a list of pb_utils.InferenceResponse. Length
         # of this list must match the length of `requests` list.

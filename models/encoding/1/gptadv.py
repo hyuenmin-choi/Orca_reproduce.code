@@ -29,7 +29,7 @@ class SelectiveAttention(nn.Module):
 
         self.n_embd = embed_dim
         self.n_head = n_heads
-        self.register_buffer("bias", torch.tril(torch.ones(n_positions, n_positions))
+        self.register_buffer("bias", torch.tril(torch.ones(n_positions, n_positions).to("cuda:0"))
                                      .view(1, 1, n_positions, n_positions))
         self.attn_dropout = nn.Dropout(drop_out)
         
@@ -99,13 +99,13 @@ class CausalSelfAttention(nn.Module):
                 nn.init.uniform_(m.weight)
                 m.bias.data.fill_(0.1)
 
-        self.c_attn = nn.Linear(embed_dim, 3 * embed_dim)
+        self.c_attn = nn.Linear(embed_dim, 3 * embed_dim).to("cuda:0")
         self.c_attn.apply(init_normal)
         # output projection
-        self.c_proj = nn.Linear(embed_dim, embed_dim)
+        self.c_proj = nn.Linear(embed_dim, embed_dim).to("cuda:0")
         self.c_proj.apply(init_normal)
         # regularization
-        self.resid_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout).to("cuda:0")
 
         self.sel_attn = SelectiveAttention(n_heads=num_heads,
                                             embed_dim=embed_dim,
@@ -132,7 +132,7 @@ class CausalSelfAttention(nn.Module):
         for i in range(len(self.request)):
 
             length = self.request[i]
-            cache_require = torch.zeros(length - prev, 1)
+            cache_require = torch.zeros(length - prev, 1).to("cuda:0")
             # print(cache_require)
             
             if self.position[prev] != 0:
@@ -155,7 +155,7 @@ class CausalSelfAttention(nn.Module):
 
         #Implementation of selective batching using naive for loop
 
-        y = torch.tensor([])
+        y = torch.tensor([]).to("cuda:0")
 
         for inputs in attnetion_qkv:
             output = self.sel_attn(inputs)
@@ -167,7 +167,7 @@ class CausalSelfAttention(nn.Module):
 
         # TODO :  should be allow more flexible batching up to 32
         
-        # device_ids = ['cuda:4','cuda:5','cuda:6','cuda:7']
+        # device_ids = ['cuda:0','cuda:1','cuda:2','cuda:3']
 
         # replicas = nn.parallel.replicate(self.sel_attn, device_ids)
         # replicas = replicas[:len(attnetion_qkv)]
@@ -179,41 +179,6 @@ class CausalSelfAttention(nn.Module):
         return y
 
 class Block(nn.Module):
-    """Decoder block.
-
-    Parameters
-    ----------
-    n_embd : int
-        Dimensionality of the embeddings.
-
-    n_head : int
-        Number of attention heads.
-
-    n_positions : int
-        Maximum number of tokens.
-
-    attn_pdrop : float
-        Probability of dropout on attention weights.
-
-    resid_pdrop : float
-        Probability of dropout after applying the MLP.
-
-    layer_norm_epsilon : float
-        Hyperparameter of layer normalization.
-
-    Attributes
-    ----------
-    ln_1, ln_2 : nn.LayerNorm
-        Layer norms.
-
-    attention : nn.MultiHeadAttention
-        Attention module.
-
-    mlp : nn.Sequential
-        Multilayer perceptron.
-
-    """
-
     def __init__(
         self,
         *,
@@ -226,8 +191,8 @@ class Block(nn.Module):
     ):
         super().__init__()
 
-        self.ln_1 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon)
-        self.ln_2 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon)
+        self.ln_1 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
+        self.ln_2 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
 
         self.attention = CausalSelfAttention(
             embed_dim=n_embd,
@@ -250,7 +215,7 @@ class Block(nn.Module):
             CustomGELU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(resid_pdrop),
-        )
+        ).to("cuda:0")
 
     # @torch.jit.script
     def forward(self, x):
@@ -347,10 +312,10 @@ class GPT(nn.Module):
     ):
         super().__init__()
         self.n_positions = n_positions
-        self.token_emb = nn.Embedding(vocab_size, n_embd)
-        self.pos_emb = nn.Embedding(n_positions, n_embd)
+        self.token_emb = nn.Embedding(vocab_size, n_embd).to("cuda:0")
+        self.pos_emb = nn.Embedding(n_positions, n_embd).to("cuda:0")
 
-        self.drop = nn.Dropout(embd_pdrop)
+        self.drop = nn.Dropout(embd_pdrop).to("cuda:0")
 
         self.blocks = nn.Sequential(
             *[
@@ -365,8 +330,8 @@ class GPT(nn.Module):
                 for _ in range(n_layer)
             ]
         )
-        self.ln = nn.LayerNorm(n_embd, eps=layer_norm_epsilon)
-        self.head = nn.Linear(n_embd, vocab_size, bias=False)
+        self.ln = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
+        self.head = nn.Linear(n_embd, vocab_size, bias=False).to("cuda:0")
         self.decode = dict()
         self.eos = 50256
 
@@ -388,6 +353,9 @@ class GPT(nn.Module):
         processed_input = list()
         processed_position = list()
         request_position = list()
+
+        idx = torch.tensor(idx, dtype=torch.int32)
+        user_ids = torch.tensor(user_ids, dtype=torch.int32)
         
         batch_size, n_tokens = idx.shape
         device = idx.device
@@ -395,21 +363,22 @@ class GPT(nn.Module):
 
         if n_tokens > self.n_positions:
             raise ValueError("There are too many tokens in the input")
-
         
+
         for index in range(batch_size):
             #each request inside batch # (max_n_token)
 
-            request = idx[index]
+            request = idx[index, :]
             request = request.tolist()
             user_id = user_ids[index].item()
+            print(f"user id {user_id}")
 
             if self.eos in request:
                 end = request.index(self.eos)
                 request = request[:end]
 
             if self.decode.get(user_id) is not None:
-                
+                print(f"decode detected : {user_id}")
                 if request[0] != request[-1]:
                     raise ValueError("decode process need only one input")
 
@@ -419,6 +388,7 @@ class GPT(nn.Module):
                 self.decode.pop(user_id, None)
 
             else:
+                print("encode phase?")
                 index = len(request)
                 processed_input.extend(request)
                 processed_position.extend(list(range(index)))
@@ -458,6 +428,7 @@ class GPT(nn.Module):
  
         for i in range(len(new_token_ix)):
             # res = new_token_ix[i].item()
-            self.decode[user_ids[i]] = request_position[i]
+            print(f"input : {user_ids[i].item()}")
+            self.decode[user_ids[i].item()] = request_position[i]
 
-        return new_token_ix.view(batch_size, 1)
+        return new_token_ix.view(batch_size, 1).to("cpu")

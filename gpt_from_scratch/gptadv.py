@@ -7,8 +7,11 @@ import math
 import torch.nn as nn
 from torch.nn import functional as F
 
-from transformers.activations import gelu_new
+import time
 
+from transformers.activations import gelu_new
+acc_attn = 0
+attn_time = 0
 
 class CustomGELU(nn.Module):
     """GELU implementation taken from the `transformers`."""
@@ -29,58 +32,62 @@ class SelectiveAttention(nn.Module):
 
         self.n_embd = embed_dim
         self.n_head = n_heads
-        self.register_buffer("bias", torch.tril(torch.ones(n_positions, n_positions))
-                                     .view(1, 1, n_positions, n_positions))
+        self.n_pos = n_positions
         self.attn_dropout = nn.Dropout(drop_out)
+
+        self.register_buffer("bias", torch.tril(torch.ones(self.n_pos, self.n_pos)).to("cuda:0")
+                                     .view(1, 1, self.n_pos, self.n_pos))
         
     
-    def forward(self, x):
-        
-        # print(x.shape)
-        cache_num = int(x[0, -1])
-        qkv = x[:, :-1]
-        # print(qkv.shape)
-        given_q, given_k, given_v = qkv.split(self.n_embd, dim=1)
+    def forward(self, *x):
+        """
+        여기서 caching은 In-sentence caching임. Not prompt caching
+        """
 
-        T,C = given_q.shape
+        output = torch.tensor([]).to(x[0].device)
 
-        T_ = T
-        
-        if(cache_num > 0): #attention with qkv cache
-            T_ = T + cache_num
+        for x_ in x:
+            # cache_num = int(x_[0, -1])
+            qkv = x_[:, :-1]
+            # print(qkv.shape)
+            given_q, given_k, given_v = qkv.split(self.n_embd, dim=1)
 
-            #assume that assessing cache is just ignorable
-            k = torch.concat([torch.randn(int(cache_num), self.n_embd), given_k])
-            q = torch.concat([torch.randn(int(cache_num), self.n_embd), given_q])
-            v = torch.concat([torch.randn(int(cache_num), self.n_embd), given_v])
-        
-        else: #normal attention
-            k = given_k
-            q = given_q
-            v = given_v
-        
-        k = k.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
-        q = q.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
-        v = v.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
-        
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = att.masked_fill(self.bias[:,:,:T_,:T_] == 0, float('-inf'))
-        att = F.softmax(att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v
-        y = y.transpose(1, 2).contiguous().view(T_, C)
-        y = y[cache_num:,:]
+            T,C = given_q.shape
 
-        return y
+            T_ = T
+            
+            if(cache_num > 0): #attention with qkv cache 
+                T_ = T + cache_num
+
+                #assume that assessing cache is just ignorable
+                k = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_k])
+                q = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_q])
+                v = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_v])
+            
+            else: #normal attention
+                k = given_k
+                q = given_q
+                v = given_v 
+            
+            k = k.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+            q = q.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+            v = v.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+            
+            att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+            att = att.masked_fill(self.bias[:,:,:T_,:T_] == 0, float('-inf'))
+            att = F.softmax(att, dim=-1)
+            att = self.attn_dropout(att)
+            y = att @ v
+            y = y.transpose(1, 2).contiguous().view(T_, C)
+            # y = y[cache_num:,:]
+            output = torch.concat([output, y])
+
+    
+        return output
         
 
 
 class CausalSelfAttention(nn.Module):
-    """
-    A vanilla multi-head masked self-attention layer with a projection at the end.
-    It is possible to use torch.nn.MultiheadAttention here but I am including an
-    explicit implementation here to show that there is nothing too scary here.
-    """
 
     def __init__(self,
         *,
@@ -99,13 +106,13 @@ class CausalSelfAttention(nn.Module):
                 nn.init.uniform_(m.weight)
                 m.bias.data.fill_(0.1)
 
-        self.c_attn = nn.Linear(embed_dim, 3 * embed_dim)
+        self.c_attn = nn.Linear(embed_dim, 3 * embed_dim).to("cuda:0")
         self.c_attn.apply(init_normal)
         # output projection
-        self.c_proj = nn.Linear(embed_dim, embed_dim)
+        self.c_proj = nn.Linear(embed_dim, embed_dim).to("cuda:0")
         self.c_proj.apply(init_normal)
         # regularization
-        self.resid_dropout = nn.Dropout(dropout)
+        self.resid_dropout = nn.Dropout(dropout).to("cuda:0")
 
         self.sel_attn = SelectiveAttention(n_heads=num_heads,
                                             embed_dim=embed_dim,
@@ -115,6 +122,10 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = embed_dim
         self.position = list()
         self.request = list()
+
+        # self.device_ids = ['cuda:0','cuda:1']
+        # self.devices = len(self.device_ids)
+        # self.replicas = nn.parallel.replicate(self.sel_attn, self.device_ids)
 
         
 
@@ -132,88 +143,47 @@ class CausalSelfAttention(nn.Module):
         for i in range(len(self.request)):
 
             length = self.request[i]
-            cache_require = torch.zeros(length - prev, 1)
-            # print(cache_require)
+            cache_require = torch.zeros(length - prev, 1).to("cuda:0")
+            
             
             if self.position[prev] != 0:
-                # print(f"position prev :{self.position[prev]}")
-                if prev == 0:
-                    cache_require[0, 0] = self.position[prev]
-                else:
-                    cache_require[0, 0] = self.position[prev] - self.position[prev - 1]
+                cache_require[0,0] = self.position[prev]
 
             q_req = q[prev:length, :]
             k_req = k[prev:length, :]
             v_req = v[prev:length, :]
             qkv = torch.concat([q_req, k_req, v_req, cache_require], dim=1)
             attnetion_qkv.append(qkv)
-            # print(qkv.shape)
+
             prev = length
-
-        # selective_input = torch.stack(attnetion_qkv, dim=0)
-        # print(selective_input.shape)
-
+        
         #Implementation of selective batching using naive for loop
 
-        y = torch.tensor([])
-
+        y = torch.tensor([]).to("cuda:0")
         for inputs in attnetion_qkv:
             output = self.sel_attn(inputs)
             y = torch.concat([y,output], dim=0)
 
-        #implementation of selective batching using data parallel module
-        #total 4 data path of parallel execution
-        #I think batch size is up to 4 now.
+        # implementation of selective batching using data parallel module
+        # total 4 data path of parallel execution
+        # I think batch size is up to 4 now.
 
-        # TODO :  should be allow more flexible batching up to 32
+        # TODO :  Data parallel library가 그냥 for 문으로 돌리는 것보다 느림 -> 이유 찾고 optimize 해야함.
         
-        # device_ids = ['cuda:4','cuda:5','cuda:6','cuda:7']
+        # inputs = [[] for i in range(self.devices)]
+        # for i in range(len(attnetion_qkv)):
+        #     inputs[(i+1)%2].append(attnetion_qkv[i].to(self.device_ids[(i+1)%2]))
 
-        # replicas = nn.parallel.replicate(self.sel_attn, device_ids)
-        # replicas = replicas[:len(attnetion_qkv)]
+        # replicas = self.replicas[:len(attnetion_qkv)]
+        
         # outputs = nn.parallel.parallel_apply(replicas, inputs)
-        # nn.parallel.gather(outputs, output_device=None)
+        # y = nn.parallel.gather(outputs, "cuda:0")
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
 
 class Block(nn.Module):
-    """Decoder block.
-
-    Parameters
-    ----------
-    n_embd : int
-        Dimensionality of the embeddings.
-
-    n_head : int
-        Number of attention heads.
-
-    n_positions : int
-        Maximum number of tokens.
-
-    attn_pdrop : float
-        Probability of dropout on attention weights.
-
-    resid_pdrop : float
-        Probability of dropout after applying the MLP.
-
-    layer_norm_epsilon : float
-        Hyperparameter of layer normalization.
-
-    Attributes
-    ----------
-    ln_1, ln_2 : nn.LayerNorm
-        Layer norms.
-
-    attention : nn.MultiHeadAttention
-        Attention module.
-
-    mlp : nn.Sequential
-        Multilayer perceptron.
-
-    """
-
     def __init__(
         self,
         *,
@@ -226,8 +196,8 @@ class Block(nn.Module):
     ):
         super().__init__()
 
-        self.ln_1 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon)
-        self.ln_2 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon)
+        self.ln_1 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
+        self.ln_2 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
 
         self.attention = CausalSelfAttention(
             embed_dim=n_embd,
@@ -250,27 +220,12 @@ class Block(nn.Module):
             CustomGELU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(resid_pdrop),
-        )
+        ).to("cuda:0")
 
-    # @torch.jit.script
     def forward(self, x):
-        """Run forward pass.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor of shape `(1, total_tokens, n_embd)`.
-
-        Returns
-        -------
-        torch.Tensor
-            Output tensor of shape `(batch_size, n_tokens, n_embd)`.
-        """
-        # batch_size, n_tokens, n_embd = x.shape
-
+       
         # is layer normalization is really critical?
         x_ = self.ln_1(x)  # (total_tokens, n_embd)  
-
 
         attn_out = self.attention(x_) # (total_tokens, n_embd)
         x = x + attn_out  # (total_tokens, n_embd)
@@ -280,57 +235,6 @@ class Block(nn.Module):
 
 
 class GPT(nn.Module):
-    """Entire GPT model.
-
-    Parameters
-    ----------
-    vocab_size : int
-        Number of tokens in the vocabulary.
-
-    n_layer : int
-        Number of decoder blocks to include.
-
-    n_embd : int
-        Dimensionality of the embeddings.
-
-    n_head : int
-        Number of attention heads.
-
-    n_positions : int
-        Maximum number of tokens.
-
-    attn_pdrop : float
-        Probability of dropout on attention weights.
-
-    embd_pdrop : float
-        Probability of dropout on the sum of embeddings.
-
-    resid_pdrop : float
-        Probability of dropout after applying the MLP.
-
-    layer_norm_epsilon : float
-        Hyperparameter of layer normalization.
-
-    Attributes
-    ----------
-    token_emb : nn.Embedding
-        Token embeddings.
-
-    pos_emb : nn.Embedding
-        Positional embedding.
-
-    drop : nn.Dropout
-        Dropout module to be applied on the sum of embeddings.
-
-    blocks : nn.Sequential
-        List of decoder blocks.
-
-    ln : nn.LayerNorm
-        Layer norm applied before applying `head`.
-
-    head : nn.Linear
-        Final linear layer.
-    """
 
     def __init__(
         self,
@@ -347,10 +251,10 @@ class GPT(nn.Module):
     ):
         super().__init__()
         self.n_positions = n_positions
-        self.token_emb = nn.Embedding(vocab_size, n_embd).to("cuda:5")
-        self.pos_emb = nn.Embedding(n_positions, n_embd)
+        self.token_emb = nn.Embedding(vocab_size, n_embd).to("cuda:0")
+        self.pos_emb = nn.Embedding(n_positions, n_embd).to("cuda:0")
 
-        self.drop = nn.Dropout(embd_pdrop)
+        self.drop = nn.Dropout(embd_pdrop).to("cuda:0")
 
         self.blocks = nn.Sequential(
             *[
@@ -365,58 +269,61 @@ class GPT(nn.Module):
                 for _ in range(n_layer)
             ]
         )
-        self.ln = nn.LayerNorm(n_embd, eps=layer_norm_epsilon)
-        self.head = nn.Linear(n_embd, vocab_size, bias=False)
+        self.ln = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
+        self.head = nn.Linear(n_embd, vocab_size, bias=False).to("cuda:0")
         self.decode = dict()
         self.eos = 50256
 
 
     def forward(self, idx, user_ids):
-        """Run forward pass.
+        processed_input = list() # batch request에서 패딩 제거 후 하나의 행으로 concat
+        processed_position = list() # processed_input 안에서 각 token의 원래 position 정보
+        request_position = list() # processed_input안에서 각 request가 끝나는 index
 
-        Parameters
-        ----------
-        idx : torch.Tensor
-            Integer tensor of shape `(batch_size, n_tokens)` where each
-            element is in the range `[0, vocab_size)`.
-
-        Returns
-        -------
-        logits : torch.Tensor
-            Tensor of shape `(batch_size, n_tokens, vocab_size)`.
         """
-        processed_input = list()
-        processed_position = list()
-        request_position = list()
+        Example
+        Input = ["hello I am (encoding phase)", "wow (decoding phase)", "my name is (encoding phase)"]
+
+        processed_input = ["hello", "I", "am", "wow", "my", "name", "is"] (실제로는 token index임)
+        processed_position = [ 0, 1, 2, n, 0, 1, 2] (n은 0 이외의 아무 숫자나 다 가능)
+        request_position = [3, 4, 7]
+        
+        """
+
+        decode_mode = 0
+
+        idx = torch.tensor(idx, dtype=torch.int32)
+        user_ids = torch.tensor(user_ids, dtype=torch.int32)
         
         batch_size, n_tokens = idx.shape
         device = idx.device
-        device = torch.device("cuda:5")
+        device = torch.device("cuda:0")
 
         if n_tokens > self.n_positions:
             raise ValueError("There are too many tokens in the input")
-
         
+
         for index in range(batch_size):
             #each request inside batch # (max_n_token)
 
-            request = idx[index]
+            request = idx[index, :]
             request = request.tolist()
-            user_id = user_ids[index]
+            user_id = user_ids[index].item()
 
             if self.eos in request:
                 end = request.index(self.eos)
                 request = request[:end]
 
             if self.decode.get(user_id) is not None:
-                
                 if request[0] != request[-1]:
                     raise ValueError("decode process need only one input")
 
                 past = self.decode[user_id]
                 processed_input.append(request[-1])
-                processed_position.append(past)
+                processed_position.append(past+1)
                 self.decode.pop(user_id, None)
+
+                decode_mode = 1
 
             else:
                 index = len(request)
@@ -426,17 +333,13 @@ class GPT(nn.Module):
             request_position.append(len(processed_position))
 
 
-
         processed_input = torch.tensor(processed_input).to(device)
         positions = torch.tensor(processed_position).to(device)
-        # request = torch.tensor(self.request_position)
 
-        # positions = torch.arange(n_tokens, device=device)  # (n_tokens,)
 
         token_emb = self.token_emb(processed_input)  # (total_tokens, n_embd)
         pos_emb = self.pos_emb(positions)  # (total_tokens, n_embd)
         x = self.drop(token_emb + pos_emb)  # (total_tokens, n_embd)
-        # print(f"processed input shape", x.shape)
 
         for name, child in self.blocks.named_children():
             child.attention.position = []
@@ -445,7 +348,6 @@ class GPT(nn.Module):
             child.attention.request.extend(request_position)
 
         x = self.blocks(x)  # (total_tokens, n_embd)
-
 
         x = self.ln(x)  # (total_tokens, n_embd)
         logits = self.head(x)  # (total_tokens, vocab_size)
@@ -457,7 +359,7 @@ class GPT(nn.Module):
         new_token_ix = probs.argmax(dim = 1)
  
         for i in range(len(new_token_ix)):
-            # res = new_token_ix[i].item()
-            self.decode[user_ids[i]] = request_position[i]
+            self.decode[user_ids[i].item()] = processed_position[request_position[i] - 1]
+        
 
-        return new_token_ix.view(batch_size, 1)
+        return new_token_ix.view(batch_size, 1).to("cpu")
