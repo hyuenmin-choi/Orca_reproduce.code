@@ -47,7 +47,7 @@ class SelectiveAttention(nn.Module):
         output = torch.tensor([]).to(x[0].device)
 
         for x_ in x:
-            # cache_num = int(x_[0, -1])
+            cache_num = int(x_[0, -1])
             qkv = x_[:, :-1]
             # print(qkv.shape)
             given_q, given_k, given_v = qkv.split(self.n_embd, dim=1)
@@ -79,7 +79,7 @@ class SelectiveAttention(nn.Module):
             att = self.attn_dropout(att)
             y = att @ v
             y = y.transpose(1, 2).contiguous().view(T_, C)
-            # y = y[cache_num:,:]
+            y = y[cache_num:,:]
             output = torch.concat([output, y])
 
     
