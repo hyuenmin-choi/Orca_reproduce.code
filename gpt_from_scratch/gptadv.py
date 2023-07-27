@@ -60,9 +60,14 @@ class SelectiveAttention(nn.Module):
                 T_ = T + cache_num
 
                 #assume that assessing cache is just ignorable
-                k = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_k])
-                q = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_q])
-                v = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_v])
+                # k = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_k])
+                # q = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_q])
+                # v = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_v])
+
+                k = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_k])
+                q = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_q])
+                v = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_v])
+                
             
             else: #normal attention
                 k = given_k
@@ -135,7 +140,7 @@ class CausalSelfAttention(nn.Module):
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k ,v  = self.c_attn(x).split(self.n_embd, dim=1)
 
-        attnetion_qkv = []
+        attention_qkv = []
         cache_require = [-1 for i in range(len(self.request))]
         
 
@@ -153,14 +158,14 @@ class CausalSelfAttention(nn.Module):
             k_req = k[prev:length, :]
             v_req = v[prev:length, :]
             qkv = torch.concat([q_req, k_req, v_req, cache_require], dim=1)
-            attnetion_qkv.append(qkv)
+            attention_qkv.append(qkv)
 
             prev = length
         
         #Implementation of selective batching using naive for loop
 
         y = torch.tensor([]).to("cuda:0")
-        for inputs in attnetion_qkv:
+        for inputs in attention_qkv:
             output = self.sel_attn(inputs)
             y = torch.concat([y,output], dim=0)
 
@@ -170,11 +175,12 @@ class CausalSelfAttention(nn.Module):
 
         # TODO :  Data parallel library가 그냥 for 문으로 돌리는 것보다 느림 -> 이유 찾고 optimize 해야함.
         
-        # inputs = [[] for i in range(self.devices)]
-        # for i in range(len(attnetion_qkv)):
-        #     inputs[(i+1)%2].append(attnetion_qkv[i].to(self.device_ids[(i+1)%2]))
+        # attention_len = len(attention_qkv)
+        # inputs = [[] for _ in range(self.devices)]
+        # for i in range(attention_len):
+        #     inputs[(i+1)%2].append(attention_qkv[i].to(self.device_ids[(i+1)%2]))
 
-        # replicas = self.replicas[:len(attnetion_qkv)]
+        # replicas = self.replicas[:attention_len]
         
         # outputs = nn.parallel.parallel_apply(replicas, inputs)
         # y = nn.parallel.gather(outputs, "cuda:0")
@@ -292,7 +298,8 @@ class GPT(nn.Module):
 
         decode_mode = 0
 
-        idx = torch.tensor(idx, dtype=torch.int32)
+        # idx = torch.tensor(idx, dtype=torch.int32)
+        idx = idx.clone().detach() # to suppress warning
         user_ids = torch.tensor(user_ids, dtype=torch.int32)
         
         batch_size, n_tokens = idx.shape
