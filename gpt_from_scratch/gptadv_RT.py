@@ -134,7 +134,6 @@ class CausalSelfAttention(nn.Module):
         # self.replicas = nn.parallel.replicate(self.sel_attn, self.device_ids)
 
         
-
     def forward(self, x):
         T, C = x.size() # total length, embedding dimensionality (n_embd)
 

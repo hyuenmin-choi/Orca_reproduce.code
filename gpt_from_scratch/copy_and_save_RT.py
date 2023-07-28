@@ -96,6 +96,7 @@ def main(argv=None):
     total_avg = 0
 
     # torch-script 사용
+    # torch-script는 성공 그러나 큰 latency 변화 없음
     traced_model = torch.jit.script(model_ours)
     model_ours = traced_model
 
