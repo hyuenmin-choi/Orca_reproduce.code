@@ -2,7 +2,7 @@ import torch
 import time
 
 # from gpt import GPT
-from gptadv import GPT
+from gptadv_RT import GPT
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import copy_model, generate_token
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
@@ -10,13 +10,15 @@ from torch.profiler import profile, record_function, ProfilerActivity
 
 from queue import PriorityQueue, Queue
 
+import torch_tensorrt
+
 class Request:
     def __init__(self, input_ids, output_len, user_id):
         
         if (isinstance(input_ids, int)):
-            print("integer")
+            # print("integer")
             self.input_ids = torch.randint(1, 50255, (1, input_ids)).to("cuda:0")
-            print(self.input_ids)
+            # print(self.input_ids)
         
         else:
             self.input_ids = input_ids
@@ -45,6 +47,7 @@ class Scheduler:
         self.total_req = 0
         self.done = 0
         self.latency = 0
+        self.norm_latency = 0
         self.measure_start = 0
         self.endflag = 0
 
@@ -55,7 +58,7 @@ class Scheduler:
             self.measure_start = request.req_time
 
         self.pool.put(request)
-        print("Request Adding Complete")
+        # print("Request Adding Complete")
         self.total_req += 1
         
         return
@@ -95,37 +98,40 @@ class Scheduler:
             return
         
         # print("Batching Done Batch length:", str(max_len))
-        input_ids = torch.empty(0, max_len, dtype=torch.int).cuda()
+        input_ids = torch.empty(0, dtype=torch.int, device = 'cuda:0')
+        pos = torch.empty(0, dtype=torch.int, device = 'cuda:0')
+        info = torch.empty(0, dtype=torch.int, device = 'cuda:0')
+        length = torch.empty(0, dtype=torch.int, device = 'cuda:0')
 
-        # print("Padding Start")
-        # model input 패딩하여 만들기
+        print("Padding Start")
+        # batching 없이 하나로 뭉쳐서 보냄
         for i in range(batch_size):
             # max_len보다 작을 경우 차이만큼 패딩
             if batch[i].next_token != None:
-                length = batch[i].next_token.shape[1]
-                if length < max_len:
-                    input = torch.cat((batch[i].next_token, torch.tensor([[self.tokenizer.eos_token_id for _ in range(max_len - length)]]).cuda()), dim=1)
-                    # print(f"length < max_len & decode case {input}")
-                else:
-                    input = batch[i].next_token
-                    # print(f"max_len & decode case {input}")
-            else:
-                length = batch[i].input_ids.shape[1]
-                if length < max_len:
-                    input = torch.cat((batch[i].input_ids, torch.tensor([[self.tokenizer.eos_token_id for _ in range(max_len - length)]]).cuda()), dim=1)
-                    # print(f"length < max_len encode case {input}")
-                else:
-                    input = batch[i].input_ids
-                    # print(f"max_len & encode case {input}")
+
+                input_ids = torch.cat((input_ids, batch[i].next_token), dim=1)
+                pos = torch.cat((pos, torch.tensor([batch[i].input_ids.shape[1]], device='cuda:0')), dim=0)
+                info = torch.cat((info, torch.tensor([batch[i].input_ids.shape[1]], device='cuda:0')), dim=0)
+                length = torch.cat([length, torch.tensor([pos.shape[0]], device='cuda:0')])
             
-            input_ids = torch.cat((input_ids, input), dim=0)
-        # print("Padding Done")
+                
+            else:
+                
+                input_ids = torch.cat((input_ids, batch[i].input_ids), dim=1)
+                pos = torch.cat((pos, torch.arange(batch[i].input_ids.shape[1], device='cuda:0')), dim=0)
+                info = torch.cat((info, torch.tensor([0], device='cuda:0')), dim=0)
+                length = torch.cat([length, torch.tensor([pos.shape[0]], device='cuda:0')])
+                
+            
+        input_ids = input_ids.squeeze()
+        
+        print("Padding Done")
 
         # 모든 input 준비완료, model inference 시작
-        # print("Inference Start")
-        # print(input_ids)
+        print("Inference Start")
+        print(input_ids)
         # print(user_ids)
-        output = self.model(input_ids, user_ids)
+        output = self.model(input_ids, info, pos, length)
         # print(output)
         # print("Inference Done")
 
@@ -134,7 +140,7 @@ class Scheduler:
             if batch[i].next_token != None:
                 batch[i].input_ids = torch.cat((batch[i].input_ids, batch[i].next_token), dim=1)
             batch[i].next_token = out.cuda()
-            print(batch[i].next_token)
+            # print(batch[i].next_token)
             if batch[i].output_length >= batch[i].max_length:
                 self.finish.put(batch[i])
             else:
@@ -149,17 +155,18 @@ class Scheduler:
             
             response = torch.cat((request.input_ids, request.next_token), dim=1)
             response_time = time.time()
-            print("Output Has Returned")
-            print(response)
-            print(f"response time {response_time - request.req_time}")
-            self.latency = (response_time - request.req_time)/request.output_length
+            # print("Output Has Returned")
+            # print(response)
+            # print(f"response time {response_time - request.req_time}")
+            self.norm_latency += (response_time - request.req_time)/request.output_length
             self.done += 1
+            self.latency += (response_time - request.req_time)
 
             if(self.done == self.total_req):
                 self.measure_end = response_time
                 self.endflag = 1
 
-        print("Finish One Iteration")
+        # print("Finish One Iteration")
         return
     
     def run(self):
@@ -174,7 +181,8 @@ class Scheduler:
     def eval_metric(self):
         print("evaluation metric")
         print(f"thorugh put : {(self.total_req / (self.measure_end - self.measure_start))} req/sec")
-        print(f"normalized latency : {self.latency / self.total_req} sec")
+        print(f"normalized latency : {(self.norm_latency / self.total_req)*1000} ms")
+        print(f"latency : {(self.latency / self.total_req)*1000} ms")
 
 # testing scheduler
 if __name__ == "__main__":
@@ -201,6 +209,34 @@ if __name__ == "__main__":
 
     copy_model(model_official, model_ours)
 
+    trt_model = torch_tensorrt.compile(model_ours, inputs = [
+        torch_tensorrt.Input( # concated input
+            min_shape=(1, 1),
+            opt_shape=(1, 128),
+            max_shape=(1, 512), 
+            dtype=torch.float32), 
+        torch_tensorrt.Input( # info
+            min_shape=(1,1),
+            opt_shape=(1,2),
+            max_shape=(1,2), 
+            dtype=torch.int32),
+        torch_tensorrt.Input( # pos
+            min_shape=(1,1),
+            opt_shape=(1,128),
+            max_shape=(1,512), 
+            dtype=torch.int32),
+        torch_tensorrt.Input( # length
+            min_shape=(1,1),
+            opt_shape=(1,2),
+            max_shape=(1,2), 
+            dtype=torch.int32),
+            ],
+        enabled_precisions = torch.float32, # Run with FP32
+    workspace_size = 1 << 33
+    )
+
+    model_ours = trt_model
+
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -211,8 +247,8 @@ if __name__ == "__main__":
     dummy_input1 = tokenizer(["Hello World my name"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
     dummy_input2 = tokenizer(["My Cat"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
 
-    dummy_req1 = Request(dummy_input1, time.time(), 10, 0)
-    dummy_req2 = Request(dummy_input2, time.time(), 5, 1)
+    dummy_req1 = Request(dummy_input1, 10, 0)
+    dummy_req2 = Request(dummy_input2, 5, 1)
 
     # print(dummy_req1.input_ids.shape[1])
 

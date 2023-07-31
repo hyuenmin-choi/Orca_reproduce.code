@@ -7,6 +7,7 @@ import threading
 import argparse
 import numpy as np
 import random
+import time
 
 class Server(threading.Thread):
     def __init__(self, batch_size, batching_delay):
@@ -33,6 +34,9 @@ class Server(threading.Thread):
         model_ours = GPT(**config_ours)
         model_ours.eval()
 
+        for param in model_ours.parameters():
+            param.grad = None
+
         tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -41,7 +45,6 @@ class Server(threading.Thread):
         self.scheduler = Scheduler(model_ours, tokenizer, batch_size, batching_delay)
 
     def addRequest(self, request):
-        print("added")
         self.scheduler.addRequest(request)
     
     def run(self):
@@ -50,14 +53,14 @@ class Server(threading.Thread):
 
 if __name__ == "__main__":
 
-    myserver = Server(4, 1)
+    myserver = Server(32, 0.1)
     print("here")
 
     #TODO : request manager => tokenizing 이후에 user id 부여
     #TODO : response 제대로 처리하기
     #TODO : request random generation code
     #TODO : request-response time 측정, thorghput 측정 방법 개발
-    request_num = 10
+    request_num = 2000
 
     request_list = []
     # input_len = np.random.random_integers(32, 512, request_num)
@@ -67,11 +70,15 @@ if __name__ == "__main__":
         new = Request(random.randint(32, 512 + 1), random.randint(32, 128 + 1), i+1)
         request_list.append(new)
     
+    # print(i)
 
     myserver.start()
 
     while(len(request_list) != 0):
         req = request_list.pop()
         myserver.addRequest(req)
-    
+        sec = np.random.poisson(lam=50)/1000
+        time.sleep(sec)
+
+
     

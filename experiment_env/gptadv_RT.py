@@ -13,11 +13,11 @@ import time
 acc_attn = 0
 attn_time = 0
 
-# class CustomGELU(nn.Module):
+class CustomGELU(nn.Module):
 
-#     def forward(self, x):
-#         """Run forward pass."""
-#         return gelu_new(x)
+    def forward(self, x):
+        """Run forward pass."""
+        return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
 
 class SelectiveAttention(nn.Module):
     def __init__(self,
@@ -43,7 +43,7 @@ class SelectiveAttention(nn.Module):
         여기서 caching은 In-sentence caching임. Not prompt caching
         """
 
-        output = torch.tensor(torch.jit.annotate(list[float], [])).to(x[0].device)
+        output = torch.empty(0, dtype=torch.float, device = x[0].device)
 
         # for x_ in x:
         x_ = x
@@ -60,9 +60,9 @@ class SelectiveAttention(nn.Module):
             T_ = T + cache_num
 
             #assume that assessing cache is just ignorable
-            k = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_k])
-            q = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_q])
-            v = torch.concat([torch.randn(int(cache_num), self.n_embd).to(x_.device), given_v])
+            k = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_k])
+            q = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_q])
+            v = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_v])
 
             # k = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_k])
             # q = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_q])
@@ -134,7 +134,7 @@ class CausalSelfAttention(nn.Module):
         
     def forward(self, x, request_position, info):
         T, C = x.size() # total length, embedding dimensionality (n_embd)
-
+        
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k ,v  = self.c_attn(x).split(self.n_embd, dim=1)
 
@@ -145,7 +145,7 @@ class CausalSelfAttention(nn.Module):
         for i in range(len(request_position)):
 
             length = request_position[i].item()
-            cache_require = torch.zeros(length - prev, 1).to("cuda:0")
+            cache_require = torch.zeros(length - prev, 1, device='cuda:0')
             
             
             if info[i].item() != 0:
@@ -154,14 +154,14 @@ class CausalSelfAttention(nn.Module):
             q_req = q[prev:length, :]
             k_req = k[prev:length, :]
             v_req = v[prev:length, :]
-            qkv = torch.concat([q_req, k_req, v_req, cache_require], dim=1)
+            qkv = torch.cat([q_req, k_req, v_req, cache_require], dim=1)
             attention_qkv.append(qkv)
 
             prev = length
         
-        #Implementation of selective batching using naive for loop
+        # Implementation of selective batching using naive for loop
 
-        y = torch.tensor(torch.jit.annotate(list[float], [])).to("cuda:0")
+        y = torch.empty(0, dtype=torch.float, device = "cuda:0")
         for inputs in attention_qkv:
             # print(inputs.shape)
             output = self.sel_attn(inputs)
@@ -188,9 +188,6 @@ class CausalSelfAttention(nn.Module):
         y = self.resid_dropout(self.c_proj(y))
         return y
 
-@torch.jit.script
-def fused_gelu(x):
-    return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
 
 class Block(nn.Module):
     def __init__(
@@ -217,15 +214,14 @@ class Block(nn.Module):
 
         self.mlp = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd),
-            fused_gelu(),
+            CustomGELU(),
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(resid_pdrop),
         ).to("cuda:0")
 
     def forward(self, x, request_position, info):
-       
-        x_ = self.ln_1(x)  # (total_tokens, n_embd)  
 
+        x_ = self.ln_1(x)  # (total_tokens, n_embd)  
         attn_out = self.attention(x_, request_position, info) # (total_tokens, n_embd)
         x = x + attn_out  # (total_tokens, n_embd)
         x = x + self.mlp(self.ln_2(x))  # (batch_size, n_tokens, n_embd)
@@ -255,8 +251,8 @@ class GPT(nn.Module):
 
         self.drop = nn.Dropout(embd_pdrop).to("cuda:0")
 
-        self.blocks = nn.Sequential(
-            *[
+        self.blocks = nn.ModuleList(
+            [
                 Block(
                     n_embd=n_embd,
                     n_head=n_head,
@@ -274,57 +270,48 @@ class GPT(nn.Module):
         self.eos = 50256
 
 
-    def forward(self, idx, info, pos):
+    def forward(self, idx, info, pos, length):
         """
         Example
 
-        Input : [batch_size, n_tokens]
+        Input : [1, total_token]
         Input = ["hello I am (encoding phase)", "wow (decoding phase)", "my name is (encoding phase)"]
         
         info : [1, batch_size]
         info = [0, n, 0] => "n" is used for qkv cache generation, scheduler will record all requests' phase information
         
-        pos : [1, variable_size]
+        pos : [1, total_token]
         pos = [0, 1, 2, n, 0, 1, 2] => input for positional encoding
+
+        length : [1, batch_size]
+        length = [3,4,7] => for spliting : each request's end point
+
+        tensor.item() 
+
+        tensor : GPU only로 생각
+        TODO: for loop 써도
+
+        result : [1, batch_size]
+        각 request 다음 token
         """
-        processed_input = torch.tensor([], device='cuda:0')
-        request_position = torch.tensor([], device='cuda:0')
 
-        idx = idx.clone().detach() # to suppress warning
-    
-        batch_size, n_tokens = idx.shape
-
-        device = torch.device("cuda:0")
-
-        
-        for index in range(batch_size):
-            #each request inside batch # (max_n_token)
-
-            request = idx[index, :]
-            #.item() cpu-gpu synch 위해서 없애야하는데 어캐함?
-            len = (info[index].item())
-
-            request = request[:len]
-            processed_input = torch.cat([processed_input, request], device='cuda:0')
-            request_position = torch.cat([request_position, torch.tensor([len(processed_input)], device='cuda:0')])
-        
-        token_emb = self.token_emb(processed_input)  # (total_tokens, n_embd)
+        token_emb = self.token_emb(idx)  # (total_tokens, n_embd)
         pos_emb = self.pos_emb(pos)  # (total_tokens, n_embd)
         x = self.drop(token_emb + pos_emb)  # (total_tokens, n_embd)
 
-        x = self.blocks(x, request_position, info)  # (total_tokens, n_embd)
+
+        # x = self.blocks(x, length, info)  # (total_tokens, n_embd)
+        for layer in self.blocks:
+            x = layer(x, length, info)
 
         x = self.ln(x)  # (total_tokens, n_embd)
         logits = self.head(x)  # (total_tokens, vocab_size)
 
-        request_end = [i-1 for i in request_position]
+        request_end = [i.item()-1 for i in length]
         new_token = logits[request_end]/1.0
+    
         probs = torch.nn.functional.softmax(new_token, dim=1)
        
         new_token_ix = probs.argmax(dim = 1)
- 
-        # for i in range(len(new_token_ix)):
-        #     self.decode[user_ids[i].item()] = processed_position[request_position[i] - 1]
-        
-
-        return new_token_ix.view(batch_size, 1).to("cpu")
+        print(new_token_ix)
+        return new_token_ix.view(length.shape[0], 1).to("cpu")
