@@ -43,8 +43,8 @@ class SelectiveAttention(nn.Module):
         여기서 caching은 In-sentence caching임. Not prompt caching
         """
 
-        # output = torch.empty(0, dtype=torch.float, device = x[0].device)
-        output = torch.zeros(0, dtype=torch.float, device = "cuda:0")
+        output = torch.empty(0, dtype=torch.float, device = x[0].device)
+        # output = torch.zeros(0, dtype=torch.float, device = "cuda:0") # TensorRT
 
         # for x_ in x:
         x_ = x
@@ -60,15 +60,18 @@ class SelectiveAttention(nn.Module):
         # if(cache_num > 0): #attention with qkv cache 
         T_ = T + cache_num
 
-        #assume that assessing cache is just ignorable
-        k = torch.concat([torch.ones(int(cache_num), self.n_embd, device="cuda:0"), given_k])
-        q = torch.concat([torch.ones(int(cache_num), self.n_embd, device="cuda:0"), given_q])
-        v = torch.concat([torch.ones(int(cache_num), self.n_embd, device="cuda:0"), given_v])
+        # assume that assessing cache is just ignorable
+        # TensorRT: No torch.rand() 
+        # k = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), given_k])
+        # q = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), given_q])
+        # v = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), given_v])
 
-        # k = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_k])
-        # q = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_q])
-        # v = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_v])
+        # No torch.cuda.Float
+        k = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_k])
+        q = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_q])
+        v = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_v])
 
+        # Faster Version
         # k = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_k])
         # q = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_q])
         # v = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_v])
@@ -147,7 +150,8 @@ class CausalSelfAttention(nn.Module):
         # cache_require = [-1 for i in range(len(self.request))]
 
         prev = 0
-        for i in range(request_position.shape[0]):
+        # for i in range(len(request_position)):
+        for i in range(request_position.shape[0]): # TensorRT
 
             length = request_position[i].item()
             cache_require = torch.zeros(length - prev, 1, device='cuda:0')
@@ -164,7 +168,8 @@ class CausalSelfAttention(nn.Module):
         
         # Implementation of selective batching using naive for loop
 
-        y = torch.zeros(0, dtype=torch.float, device = "cuda:0")
+        y = torch.empty(0, dtype=torch.float, device = "cuda:0")
+        # y = torch.zeros(0, dtype=torch.float, device = "cuda:0")
         for inputs in attention_qkv:
             # print(inputs.shape)
             output = self.sel_attn(inputs)
@@ -311,7 +316,8 @@ class GPT(nn.Module):
         x = self.ln(x)  # (total_tokens, n_embd)
         logits = self.head(x)  # (total_tokens, vocab_size)
 
-        request_end = [length[i].item() - 1 for i in range(length.shape[0])]
+        # request_end = [i.item()-1 for i in length]
+        request_end = [length[i].item() - 1 for i in range(length.shape[0])] # TensorRT
         new_token = logits[request_end]/1.0
     
         probs = torch.nn.functional.softmax(new_token, dim=1)
