@@ -7,12 +7,15 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from utils import copy_model, generate_token
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
 from torch.profiler import profile, record_function, ProfilerActivity
+import numpy as np
 
 from queue import PriorityQueue, Queue
 
 import torch_tensorrt
 from torch.onnx import export
 import onnx
+import onnxruntime as ort
+print(ort.get_device())
 
 class Request:
     def __init__(self, input_ids, output_len, user_id):
@@ -125,17 +128,32 @@ class Scheduler:
                 length = torch.cat([length, torch.tensor([pos.shape[0]], device='cuda:0')])
                 
             
-        input_ids = input_ids.squeeze()
+        input_ids = input_ids.view(-1)
         
+        input_ids = np.array(input_ids.int().cpu())
+        info = np.array(info.int().cpu())
+        pos = np.array(pos.int().cpu())
+        length = np.array(length.int().cpu())
+
         print("Padding Done")
 
         # 모든 input 준비완료, model inference 시작
-        print("Inference Start")
-        print(input_ids)
+        # print("Inference Start")
+        # print(input_ids.shape)
+        # print(info.shape)
+        # print(pos.shape)
+        # print(length.shape)
+        print(self.model.get_inputs()[0].name)
+        print(self.model.get_inputs()[1].name)
+        print(self.model.get_inputs()[2].name)
+        print(self.model.get_inputs()[3].name)
 
         # with profile(with_stack=True, record_shapes=True) as prof:
         #     with record_function("model_inference"):
-        output = self.model(input_ids, info, pos, length)
+        # output = self.model(input_ids, info, pos, length)
+        # For ONNX
+        output = self.model.run(None, {'input_ids': input_ids, 'info': info, 'pos': pos, 'length': length})
+
         # prof.export_chrome_trace("trace.json")
 
         # print(output)
@@ -212,46 +230,56 @@ if __name__ == "__main__":
     model_ours = GPT(**config_ours)
     # model_ours = GPT(**config_ours)
     model_ours.eval()
+    model_ours.zero_grad(True)
 
     copy_model(model_official, model_ours)
 
-    with torch_tensorrt.logging.debug():
+    # with torch_tensorrt.logging.debug():
 
-        trt_model = torch_tensorrt.compile(model_ours, inputs = [
-        torch_tensorrt.Input( # concated input
-            min_shape=(1,),
-            opt_shape=(128,),
-            max_shape=(512,), 
-            dtype=torch.int32), 
-        torch_tensorrt.Input( # info
-            min_shape=(1,),
-            opt_shape=(2,),
-            max_shape=(2,), 
-            dtype=torch.int32),
-        torch_tensorrt.Input( # pos
-            min_shape=(1,),
-            opt_shape=(128,),
-            max_shape=(512,), 
-            dtype=torch.int32),
-        torch_tensorrt.Input( # length
-            min_shape=(1,),
-            opt_shape=(2,),
-            max_shape=(2,),
-            dtype=torch.int32),
-            ],
-        enabled_precisions = torch.float32, # Run with FP32
-        workspace_size = 1 << 33,
-        require_full_compilation = True
-    )
+    #     trt_model = torch_tensorrt.compile(model_ours, inputs = [
+    #     torch_tensorrt.Input( # concated input
+    #         min_shape=(1,),
+    #         opt_shape=(128,),
+    #         max_shape=(512,), 
+    #         dtype=torch.int32), 
+    #     torch_tensorrt.Input( # info
+    #         min_shape=(1,),
+    #         opt_shape=(2,),
+    #         max_shape=(2,), 
+    #         dtype=torch.int32),
+    #     torch_tensorrt.Input( # pos
+    #         min_shape=(1,),
+    #         opt_shape=(128,),
+    #         max_shape=(512,), 
+    #         dtype=torch.int32),
+    #     torch_tensorrt.Input( # length
+    #         min_shape=(1,),
+    #         opt_shape=(2,),
+    #         max_shape=(2,),
+    #         dtype=torch.int32),
+    #         ],
+    #     enabled_precisions = torch.float32, # Run with FP32
+    #     workspace_size = 1 << 33,
+    #     require_full_compilation = True
+    # )
 
-    model_ours = trt_model
+    # model_ours = trt_model
 
-    # dummy_input = [
-    #     torch.randint(768, size=[1,], dtype=torch.int32).cuda(),
-    #     torch.ones([1,], dtype=torch.int32).cuda(),
-    #     torch.ones([1,], dtype=torch.int32).cuda(),
-    #     torch.ones([1,], dtype=torch.int32).cuda()
-    # ]
+    # TEST
+    # output = model_ours(        
+    #     torch.randint(768, size=(1,), dtype=torch.int32).cuda(),
+    #     torch.ones((1,), dtype=torch.int32).cuda(),
+    #     torch.ones((1,), dtype=torch.int32).cuda(),
+    #     torch.ones((1,), dtype=torch.int32).cuda())
+    
+    # print(output)
+
+    # dummy_input = (
+    #     torch.randint(768, size=(1,), dtype=torch.int32).cuda(),
+    #     torch.ones((1,), dtype=torch.int32).cuda(),
+    #     torch.ones((1,), dtype=torch.int32).cuda(),
+    #     torch.ones((1,), dtype=torch.int32).cuda()
+    # )
 
     # onnx_model = export(
     #     model_ours,
@@ -264,15 +292,17 @@ if __name__ == "__main__":
     #         "info": {0: "batch"},
     #         "pos": {0: "total_token"},
     #         "legnth" : {0: "batch"},
-    #         "output_ids": {0: "batch", 1: "sequence"}
-    #     }
+    #         "output_ids": {0: "batch"}
+    #     },
+    #     opset_version=16,
+    #     # verbose=True
     # )
 
-    # import onnxruntime
-    # ort_session = onnxruntime.InferenceSession("/workspace/experiment_env/gptadv.onnx")
 
-    # rt_model = torch2trt(model_ours, dummy_input, use_onnx=True)
-    # model_ours = rt_model
+    onnx_model = onnx.load("/workspace/experiment_env/gptadv.onnx")
+    onnx.checker.check_model(onnx_model)
+    ort_session = ort.InferenceSession("/workspace/experiment_env/gptadv.onnx", providers=['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
+    model_ours = ort_session
 
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token

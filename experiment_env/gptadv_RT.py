@@ -14,7 +14,7 @@ acc_attn = 0
 attn_time = 0
 
 class CustomGELU(nn.Module):
-
+    @torch.no_grad()
     def forward(self, x):
         """Run forward pass."""
         return x * 0.5 * (1.0 + torch.erf(x / 1.41421))
@@ -37,13 +37,13 @@ class SelectiveAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(self.n_pos, self.n_pos)).to("cuda:0")
                                      .view(1, 1, self.n_pos, self.n_pos))
         
-    
+    @torch.no_grad()
     def forward(self, x):
         """
         여기서 caching은 In-sentence caching임. Not prompt caching
         """
 
-        output = torch.empty(0, dtype=torch.float, device = x[0].device)
+        # output = torch.empty((0,768), dtype=torch.float, device = x[0].device)
         # output = torch.zeros(0, dtype=torch.float, device = "cuda:0") # TensorRT
 
         # for x_ in x:
@@ -82,9 +82,13 @@ class SelectiveAttention(nn.Module):
         #     q = given_q
         #     v = given_v 
         
-        k = k.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
-        q = q.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
-        v = v.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+        # k = k.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+        # q = q.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+        # v = v.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
+        
+        k = k.view(T_, self.n_head, -1).transpose(0, 1) # (nh, T, hs)
+        q = q.view(T_, self.n_head, -1).transpose(0, 1) # (nh, T, hs)
+        v = v.view(T_, self.n_head, -1).transpose(0, 1) # (nh, T, hs)
         
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
         att = att.masked_fill(self.bias[:,:,:T_,:T_] == 0, float('-inf'))
@@ -93,10 +97,10 @@ class SelectiveAttention(nn.Module):
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(T_, C)
         y = y[cache_num:,:]
-        output = torch.concat([output, y])
+        # output = torch.cat([output, y])
 
-    
-        return output
+        # return output
+        return y
         
 
 
@@ -139,7 +143,7 @@ class CausalSelfAttention(nn.Module):
         # self.devices = len(self.device_ids)
         # self.replicas = nn.parallel.replicate(self.sel_attn, self.device_ids)
 
-        
+    @torch.no_grad()    
     def forward(self, x, request_position, info):
         T, C = x.size() # total length, embedding dimensionality (n_embd)
         
@@ -170,14 +174,21 @@ class CausalSelfAttention(nn.Module):
         
         # Implementation of selective batching using naive for loop
 
-        y = torch.empty(0, dtype=torch.float, device = "cuda:0")
+        y = torch.empty((0,768), dtype=torch.float, device = "cuda:0") # ERROR IN ONNX
         # y = torch.zeros(0, dtype=torch.float, device = "cuda:0")
+        # y_ = []
         for inputs in attention_qkv:
             # print(inputs.shape)
             output = self.sel_attn(inputs)
             # print(output)
-            y = torch.concat([y,output], dim=0)
-
+            # print(y)
+            # print(output.shape) # (total_token, embedding)
+            # T, E = output.shape
+            y = torch.cat((y, output), dim=0)
+            # y_.append(output)
+        
+        # y = torch.cat(y_, dim=0)
+        
         # implementation of selective batching using data parallel module
         # total 4 data path of parallel execution
         # I think batch size is up to 4 now.
@@ -228,7 +239,7 @@ class Block(nn.Module):
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(resid_pdrop),
         ).to("cuda:0")
-
+    @torch.no_grad()
     def forward(self, x, request_position, info):
 
         x_ = self.ln_1(x)  # (total_tokens, n_embd)  
@@ -279,7 +290,7 @@ class GPT(nn.Module):
         # self.decode : dict[int, int] = {-1:-1}
         self.eos = 50256
 
-
+    @torch.no_grad()
     def forward(self, idx, info, pos, length):
         """
         Example
