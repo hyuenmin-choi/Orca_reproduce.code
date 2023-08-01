@@ -11,13 +11,15 @@ from torch.profiler import profile, record_function, ProfilerActivity
 from queue import PriorityQueue, Queue
 
 import torch_tensorrt
+from torch.onnx import export
+import onnx
 
 class Request:
     def __init__(self, input_ids, output_len, user_id):
         
         if (isinstance(input_ids, int)):
             # print("integer")
-            self.input_ids = torch.randint(1, 50255, (1, input_ids)).to("cuda:0")
+            self.input_ids = torch.randint(1, 50255, (1, input_ids), dtype=torch.int32, device="cuda:0")
             # print(self.input_ids)
         
         else:
@@ -98,10 +100,10 @@ class Scheduler:
             return
         
         # print("Batching Done Batch length:", str(max_len))
-        input_ids = torch.empty(0, dtype=torch.int, device = 'cuda:0')
-        pos = torch.empty(0, dtype=torch.int, device = 'cuda:0')
-        info = torch.empty(0, dtype=torch.int, device = 'cuda:0')
-        length = torch.empty(0, dtype=torch.int, device = 'cuda:0')
+        input_ids = torch.empty(0, dtype=torch.int64, device = 'cuda:0')
+        pos = torch.empty(0, dtype=torch.int64, device = 'cuda:0')
+        info = torch.empty(0, dtype=torch.int64, device = 'cuda:0')
+        length = torch.empty(0, dtype=torch.int64, device = 'cuda:0')
 
         print("Padding Start")
         # batching 없이 하나로 뭉쳐서 보냄
@@ -130,8 +132,12 @@ class Scheduler:
         # 모든 input 준비완료, model inference 시작
         print("Inference Start")
         print(input_ids)
-        # print(user_ids)
+
+        # with profile(with_stack=True, record_shapes=True) as prof:
+        #     with record_function("model_inference"):
         output = self.model(input_ids, info, pos, length)
+        # prof.export_chrome_trace("trace.json")
+
         # print(output)
         # print("Inference Done")
 
@@ -209,33 +215,64 @@ if __name__ == "__main__":
 
     copy_model(model_official, model_ours)
 
-    trt_model = torch_tensorrt.compile(model_ours, inputs = [
+    with torch_tensorrt.logging.debug():
+
+        trt_model = torch_tensorrt.compile(model_ours, inputs = [
         torch_tensorrt.Input( # concated input
-            min_shape=(1, 1),
-            opt_shape=(1, 128),
-            max_shape=(1, 512), 
-            dtype=torch.float32), 
+            min_shape=(1,),
+            opt_shape=(128,),
+            max_shape=(512,), 
+            dtype=torch.int32), 
         torch_tensorrt.Input( # info
-            min_shape=(1,1),
-            opt_shape=(1,2),
-            max_shape=(1,2), 
+            min_shape=(1,),
+            opt_shape=(2,),
+            max_shape=(2,), 
             dtype=torch.int32),
         torch_tensorrt.Input( # pos
-            min_shape=(1,1),
-            opt_shape=(1,128),
-            max_shape=(1,512), 
+            min_shape=(1,),
+            opt_shape=(128,),
+            max_shape=(512,), 
             dtype=torch.int32),
         torch_tensorrt.Input( # length
-            min_shape=(1,1),
-            opt_shape=(1,2),
-            max_shape=(1,2), 
+            min_shape=(1,),
+            opt_shape=(2,),
+            max_shape=(2,),
             dtype=torch.int32),
             ],
         enabled_precisions = torch.float32, # Run with FP32
-    workspace_size = 1 << 33
+        workspace_size = 1 << 33,
+        require_full_compilation = True
     )
 
     model_ours = trt_model
+
+    # dummy_input = [
+    #     torch.randint(768, size=[1,], dtype=torch.int32).cuda(),
+    #     torch.ones([1,], dtype=torch.int32).cuda(),
+    #     torch.ones([1,], dtype=torch.int32).cuda(),
+    #     torch.ones([1,], dtype=torch.int32).cuda()
+    # ]
+
+    # onnx_model = export(
+    #     model_ours,
+    #     dummy_input,
+    #     "/workspace/experiment_env/gptadv.onnx",
+    #     input_names=['input_ids', 'info', 'pos', 'length'],
+    #     output_names=['output_ids'],
+    #     dynamic_axes={
+    #         "input_ids": {0: "total_token"},
+    #         "info": {0: "batch"},
+    #         "pos": {0: "total_token"},
+    #         "legnth" : {0: "batch"},
+    #         "output_ids": {0: "batch", 1: "sequence"}
+    #     }
+    # )
+
+    # import onnxruntime
+    # ort_session = onnxruntime.InferenceSession("/workspace/experiment_env/gptadv.onnx")
+
+    # rt_model = torch2trt(model_ours, dummy_input, use_onnx=True)
+    # model_ours = rt_model
 
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token

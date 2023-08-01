@@ -105,7 +105,7 @@ def main(argv=None):
             min_shape=(1, 1),
             opt_shape=(16, 32),
             max_shape=(32, 32), 
-            dtype=torch.float32), 
+            dtype=torch.int32), 
             torch_tensorrt.Input(
             min_shape=(1,),
             opt_shape=(16,),

@@ -43,7 +43,8 @@ class SelectiveAttention(nn.Module):
         여기서 caching은 In-sentence caching임. Not prompt caching
         """
 
-        output = torch.empty(0, dtype=torch.float, device = x[0].device)
+        # output = torch.empty(0, dtype=torch.float, device = x[0].device)
+        output = torch.zeros(0, dtype=torch.float, device = "cuda:0")
 
         # for x_ in x:
         x_ = x
@@ -56,23 +57,27 @@ class SelectiveAttention(nn.Module):
 
         T_ = T
         
-        if(cache_num > 0): #attention with qkv cache 
-            T_ = T + cache_num
+        # if(cache_num > 0): #attention with qkv cache 
+        T_ = T + cache_num
 
-            #assume that assessing cache is just ignorable
-            k = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_k])
-            q = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_q])
-            v = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_v])
+        #assume that assessing cache is just ignorable
+        k = torch.concat([torch.ones(int(cache_num), self.n_embd, device="cuda:0"), given_k])
+        q = torch.concat([torch.ones(int(cache_num), self.n_embd, device="cuda:0"), given_q])
+        v = torch.concat([torch.ones(int(cache_num), self.n_embd, device="cuda:0"), given_v])
 
-            # k = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_k])
-            # q = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_q])
-            # v = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_v])
+        # k = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_k])
+        # q = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_q])
+        # v = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_v])
+
+        # k = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_k])
+        # q = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_q])
+        # v = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_v])
             
         
-        else: #normal attention
-            k = given_k
-            q = given_q
-            v = given_v 
+        # else: #normal attention
+        #     k = given_k
+        #     q = given_q
+        #     v = given_v 
         
         k = k.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
         q = q.view(T_, self.n_head, C // self.n_head).transpose(0, 1) # (nh, T, hs)
@@ -142,14 +147,12 @@ class CausalSelfAttention(nn.Module):
         # cache_require = [-1 for i in range(len(self.request))]
 
         prev = 0
-        for i in range(len(request_position)):
+        for i in range(request_position.shape[0]):
 
             length = request_position[i].item()
             cache_require = torch.zeros(length - prev, 1, device='cuda:0')
-            
-            
-            if info[i].item() != 0:
-                cache_require[0,0] = info[i].item()
+        
+            cache_require[0,0] = info[i].item()
 
             q_req = q[prev:length, :]
             k_req = k[prev:length, :]
@@ -161,7 +164,7 @@ class CausalSelfAttention(nn.Module):
         
         # Implementation of selective batching using naive for loop
 
-        y = torch.empty(0, dtype=torch.float, device = "cuda:0")
+        y = torch.zeros(0, dtype=torch.float, device = "cuda:0")
         for inputs in attention_qkv:
             # print(inputs.shape)
             output = self.sel_attn(inputs)
@@ -295,6 +298,7 @@ class GPT(nn.Module):
         각 request 다음 token
         """
 
+
         token_emb = self.token_emb(idx)  # (total_tokens, n_embd)
         pos_emb = self.pos_emb(pos)  # (total_tokens, n_embd)
         x = self.drop(token_emb + pos_emb)  # (total_tokens, n_embd)
@@ -307,11 +311,11 @@ class GPT(nn.Module):
         x = self.ln(x)  # (total_tokens, n_embd)
         logits = self.head(x)  # (total_tokens, vocab_size)
 
-        request_end = [i.item()-1 for i in length]
+        request_end = [length[i].item() - 1 for i in range(length.shape[0])]
         new_token = logits[request_end]/1.0
     
         probs = torch.nn.functional.softmax(new_token, dim=1)
        
-        new_token_ix = probs.argmax(dim = 1)
-        print(new_token_ix)
-        return new_token_ix.view(length.shape[0], 1).to("cpu")
+        new_token_idx = torch.argmax(probs, dim = 1)
+
+        return new_token_idx.view(length.shape[0], 1).to("cpu")
