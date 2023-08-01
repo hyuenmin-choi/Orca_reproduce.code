@@ -151,12 +151,14 @@ class CausalSelfAttention(nn.Module):
 
         prev = 0
         # for i in range(len(request_position)):
-        for i in range(request_position.shape[0]): # TensorRT
+        for i in range(request_position.shape[0]): # TensorRT, ONNX
 
-            length = request_position[i].item()
+            # length = request_position[i].item()
+            length = int(request_position[i]) # ONNX
             cache_require = torch.zeros(length - prev, 1, device='cuda:0')
         
-            cache_require[0,0] = info[i].item()
+            # cache_require[0,0] = info[i].item()
+            cache_require[0,0] = int(info[i]) # ONNX
 
             q_req = q[prev:length, :]
             k_req = k[prev:length, :]
@@ -317,7 +319,7 @@ class GPT(nn.Module):
         logits = self.head(x)  # (total_tokens, vocab_size)
 
         # request_end = [i.item()-1 for i in length]
-        request_end = [length[i].item() - 1 for i in range(length.shape[0])] # TensorRT
+        request_end = [int(length[i]) - 1 for i in range(length.shape[0])] # TensorRT, ONNX
         new_token = logits[request_end]/1.0
     
         probs = torch.nn.functional.softmax(new_token, dim=1)
