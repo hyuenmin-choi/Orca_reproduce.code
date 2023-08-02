@@ -48,16 +48,15 @@ class SelectiveAttention(nn.Module):
 
         # for x_ in x:
         x_ = x
-        cache_num = int(x_[0, -1])
+        cache_num = x_[0, -1]
         qkv = x_[:, :-1]
         # print(qkv.shape)
         given_q, given_k, given_v = qkv.split(self.n_embd, dim=1)
 
-        T,C = given_q.shape
-
-        T_ = T
-        
+        T, C = given_q.shape
         # if(cache_num > 0): #attention with qkv cache 
+        T = T.long()
+        cache_num = cache_num.long()
         T_ = T + cache_num
 
         # assume that assessing cache is just ignorable
@@ -67,9 +66,9 @@ class SelectiveAttention(nn.Module):
         # v = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), given_v])
 
         # No torch.cuda.Float
-        k = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_k])
-        q = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_q])
-        v = torch.concat([torch.rand(int(cache_num), self.n_embd, device=x_.device), given_v])
+        k = torch.concat([torch.rand(cache_num, self.n_embd, device=x_.device), given_k])
+        q = torch.concat([torch.rand(cache_num, self.n_embd, device=x_.device), given_q])
+        v = torch.concat([torch.rand(cache_num, self.n_embd, device=x_.device), given_v])
 
         # Faster Version
         # k = torch.concat([torch.cuda.FloatTensor(int(cache_num), self.n_embd).normal_(), given_k])
@@ -89,8 +88,8 @@ class SelectiveAttention(nn.Module):
         k = k.view(T_, self.n_head, -1).transpose(0, 1) # (nh, T, hs)
         q = q.view(T_, self.n_head, -1).transpose(0, 1) # (nh, T, hs)
         v = v.view(T_, self.n_head, -1).transpose(0, 1) # (nh, T, hs)
-        
-        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+
+        att = (q @ k.transpose(-2, -1)) * (1.0 / torch.sqrt(k.shape[-1].float()))
         att = att.masked_fill(self.bias[:,:,:T_,:T_] == 0, float('-inf'))
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
@@ -144,7 +143,7 @@ class CausalSelfAttention(nn.Module):
         # self.replicas = nn.parallel.replicate(self.sel_attn, self.device_ids)
 
     @torch.no_grad()    
-    def forward(self, x, request_position, info):
+    def forward(self, x, request_position, info, batch_size):
         T, C = x.size() # total length, embedding dimensionality (n_embd)
         
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -153,20 +152,26 @@ class CausalSelfAttention(nn.Module):
         attention_qkv = []
         # cache_require = [-1 for i in range(len(self.request))]
 
+        # print(len_dim)
+
+        # info_shape = info.shape
+
         prev = 0
         # for i in range(len(request_position)):
-        for i in range(request_position.shape[0]): # TensorRT, ONNX
+        for i in range(batch_size): # TensorRT, ONNX
 
             # length = request_position[i].item()
-            length = int(request_position[i]) # ONNX
-            cache_require = torch.zeros(length - prev, 1, device='cuda:0')
+            length = request_position[i] # ONNX
+
+            cache_require = torch.zeros(torch.sub(length, prev), 1, device='cuda:0')
         
             # cache_require[0,0] = info[i].item()
-            cache_require[0,0] = int(info[i]) # ONNX
+            cache_require[0,0] = info[i] # ONNX
 
             q_req = q[prev:length, :]
             k_req = k[prev:length, :]
             v_req = v[prev:length, :]
+
             qkv = torch.cat([q_req, k_req, v_req, cache_require], dim=1)
             attention_qkv.append(qkv)
 
@@ -240,10 +245,10 @@ class Block(nn.Module):
             nn.Dropout(resid_pdrop),
         ).to("cuda:0")
     @torch.no_grad()
-    def forward(self, x, request_position, info):
+    def forward(self, x, request_position, info, batch_size):
 
         x_ = self.ln_1(x)  # (total_tokens, n_embd)  
-        attn_out = self.attention(x_, request_position, info) # (total_tokens, n_embd)
+        attn_out = self.attention(x_, request_position, info, batch_size) # (total_tokens, n_embd)
         x = x + attn_out  # (total_tokens, n_embd)
         x = x + self.mlp(self.ln_2(x))  # (batch_size, n_tokens, n_embd)
 
@@ -291,7 +296,7 @@ class GPT(nn.Module):
         self.eos = 50256
 
     @torch.no_grad()
-    def forward(self, idx, info, pos, length):
+    def forward(self, idx, info, pos, length, batch_size):
         """
         Example
 
@@ -323,18 +328,23 @@ class GPT(nn.Module):
 
 
         # x = self.blocks(x, length, info)  # (total_tokens, n_embd)
+
         for layer in self.blocks:
-            x = layer(x, length, info)
+            x = layer(x, length, info, batch_size)
 
         x = self.ln(x)  # (total_tokens, n_embd)
         logits = self.head(x)  # (total_tokens, vocab_size)
 
         # request_end = [i.item()-1 for i in length]
-        request_end = [int(length[i]) - 1 for i in range(length.shape[0])] # TensorRT, ONNX
+        request_end = torch.sub(length, 1) # ONNX
+        # print(request_end)
         new_token = logits[request_end]/1.0
+        # print(logits)
+        # print(new_token)
     
-        probs = torch.nn.functional.softmax(new_token, dim=1)
+        probs = torch.nn.functional.softmax(new_token, dim = 1)
+        # print(probs)
        
         new_token_idx = torch.argmax(probs, dim = 1)
 
-        return new_token_idx.view(length.shape[0], 1).to("cpu")
+        return new_token_idx.view(batch_size, 1).to("cpu")
