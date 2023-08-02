@@ -15,7 +15,7 @@ import torch_tensorrt
 from torch.onnx import export
 import onnx
 import onnxruntime as ort
-print(ort.get_device())
+print("Device: " + ort.get_device())
 
 class Request:
     def __init__(self, input_ids, output_len, user_id):
@@ -138,32 +138,29 @@ class Scheduler:
         print("Padding Done")
 
         # 모든 input 준비완료, model inference 시작
-        # print("Inference Start")
-        # print(input_ids.shape)
-        # print(info.shape)
-        # print(pos.shape)
-        # print(length.shape)
-        print(self.model.get_inputs()[0].name)
-        print(self.model.get_inputs()[1].name)
-        print(self.model.get_inputs()[2].name)
-        print(self.model.get_inputs()[3].name)
+        print("Inference Start")
+        print(input_ids)
+        print(info)
+        print(pos)
+        print(length)
 
         # with profile(with_stack=True, record_shapes=True) as prof:
         #     with record_function("model_inference"):
         # output = self.model(input_ids, info, pos, length)
         # For ONNX
-        output = self.model.run(None, {'input_ids': input_ids, 'info': info, 'pos': pos, 'length': length})
+        output = self.model.run(None, {'input_ids': input_ids, 'pos': pos})
 
         # prof.export_chrome_trace("trace.json")
 
-        # print(output)
-        # print("Inference Done")
+        print(output)
+        print("Inference Done")
 
         # request update
-        for i, out in zip(range(batch_size), output.split(1)):
+        for i, out in zip(range(batch_size), output):
             if batch[i].next_token != None:
                 batch[i].input_ids = torch.cat((batch[i].input_ids, batch[i].next_token), dim=1)
-            batch[i].next_token = out.cuda()
+            # batch[i].next_token = out.cuda()
+            batch[i].next_token = torch.from_numpy(out).cuda()
             # print(batch[i].next_token)
             if batch[i].output_length >= batch[i].max_length:
                 self.finish.put(batch[i])
@@ -267,55 +264,76 @@ if __name__ == "__main__":
 
     # TEST
     # output = model_ours(        
-    #     torch.randint(768, size=(1,), dtype=torch.int32).cuda(),
-    #     torch.ones((1,), dtype=torch.int32).cuda(),
-    #     torch.ones((1,), dtype=torch.int32).cuda(),
-    #     torch.ones((1,), dtype=torch.int32).cuda())
+    #     torch.tensor([15496,  2159,   318,  3666,  5181,   318], dtype=torch.int32).cuda(),
+    #     torch.tensor([0, 0], dtype=torch.int32).cuda(),
+    #     torch.tensor([0, 1, 2, 0, 1, 2], dtype=torch.int32).cuda(),
+    #     torch.tensor([3, 6], dtype=torch.int32).cuda()
+    # )
     
     # print(output)
 
-    # dummy_input = (
-    #     torch.randint(768, size=(1,), dtype=torch.int32).cuda(),
-    #     torch.ones((1,), dtype=torch.int32).cuda(),
-    #     torch.ones((1,), dtype=torch.int32).cuda(),
-    #     torch.ones((1,), dtype=torch.int32).cuda()
-    # )
+    dummy_input = (
+        torch.tensor([15496,  2159,   318,  3666,  5181,   318], dtype=torch.int32).cuda(),
+        torch.tensor([0, 0], dtype=torch.int32).cuda(),
+        torch.tensor([0, 1, 2, 0, 1, 2], dtype=torch.int32).cuda(),
+        torch.tensor([3, 6], dtype=torch.int32).cuda()
+    )
 
-    # onnx_model = export(
-    #     model_ours,
-    #     dummy_input,
-    #     "/workspace/experiment_env/gptadv.onnx",
-    #     input_names=['input_ids', 'info', 'pos', 'length'],
-    #     output_names=['output_ids'],
-    #     dynamic_axes={
-    #         "input_ids": {0: "total_token"},
-    #         "info": {0: "batch"},
-    #         "pos": {0: "total_token"},
-    #         "legnth" : {0: "batch"},
-    #         "output_ids": {0: "batch"}
-    #     },
-    #     opset_version=16,
-    #     # verbose=True
-    # )
+    onnx_model = export(
+        model_ours,
+        dummy_input,
+        "/workspace/experiment_env/gptadv.onnx",
+        input_names=['input_ids', 'info', 'pos', 'length'],
+        output_names=['output_ids'],
+        dynamic_axes={
+            "input_ids": {0: "total_token"},
+            "info": {0: "batch"},
+            "pos": {0: "total_token"},
+            "legnth" : {0: "batch"},
+            "output_ids": {0: "batch"}
+        },
+        opset_version=16,
+        # verbose=True
+    )
 
 
     onnx_model = onnx.load("/workspace/experiment_env/gptadv.onnx")
     onnx.checker.check_model(onnx_model)
+
+    model = onnx_model
+    output =[node.name for node in model.graph.output]
+    input_all = [node.name for node in model.graph.input]
+
+    print('Inputs: ', input_all)
+    print('Outputs: ', output)
+
     ort_session = ort.InferenceSession("/workspace/experiment_env/gptadv.onnx", providers=['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider'])
     model_ours = ort_session
 
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
 
-    # print(tokenizer.eos_token)
-
     scheduler = Scheduler(model_ours, tokenizer, 2, 1)
 
-    dummy_input1 = tokenizer(["Hello World my name"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
-    dummy_input2 = tokenizer(["My Cat"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
+    # # Warming Up
+    # print("Warming Up: input size 1 to 128")
+    # hotpack = tokenizer(["So"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
+    # hotpack_r = Request(hotpack, 1, 0)
+    # scheduler.addRequest(hotpack_r)
+    # scheduler.schedule()
+    # hotpack = tokenizer(["Hot"*128], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
+    # hotpack_r = Request(hotpack, 1, 0)
+    # scheduler.addRequest(hotpack_r)
+    # scheduler.schedule()
+    # print("Warm Up Done")
 
-    dummy_req1 = Request(dummy_input1, 10, 0)
-    dummy_req2 = Request(dummy_input2, 5, 1)
+
+    dummy_input1 = tokenizer(["Hello World is"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
+    dummy_input2 = tokenizer(["My Cat is"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0")
+
+    dummy_req1 = Request(dummy_input1, 10, 1)
+    dummy_req2 = Request(dummy_input2, 5, 2)
+
 
     # print(dummy_req1.input_ids.shape[1])
 
@@ -324,11 +342,11 @@ if __name__ == "__main__":
 
     scheduler.schedule()
     scheduler.schedule()
-    scheduler.schedule()
-    scheduler.schedule()
-    scheduler.schedule() #5 request2 should be end
-    scheduler.schedule()
-    scheduler.schedule()
-    scheduler.schedule()
-    scheduler.schedule()
-    scheduler.schedule() #10 request1 should be end
+    # scheduler.schedule()
+    # scheduler.schedule()
+    # scheduler.schedule() #5 request2 should be end
+    # scheduler.schedule()
+    # scheduler.schedule()
+    # scheduler.schedule()
+    # scheduler.schedule()
+    # scheduler.schedule() #10 request1 should be end
