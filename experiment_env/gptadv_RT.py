@@ -244,6 +244,7 @@ class Block(nn.Module):
             nn.Linear(4 * n_embd, n_embd),
             nn.Dropout(resid_pdrop),
         ).to("cuda:0")
+        
     @torch.no_grad()
     def forward(self, x, request_position, info, batch_size):
 
