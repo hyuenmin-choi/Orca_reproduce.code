@@ -28,7 +28,7 @@ class GPT_Projection(nn.module):
             # nn.Dropout(resid_pdrop),
         ).to("cuda:0")
 
-        self.ln_2 = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
+        self.ln = nn.LayerNorm(n_embd, eps=layer_norm_epsilon).to("cuda:0")
 
     def forward(self, x, y): # x: original input, y: attention input
         attn_out = self.c_proj(y)

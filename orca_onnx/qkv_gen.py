@@ -1,6 +1,8 @@
 import torch
+import torch.nn as nn
+from torch.nn import functional as F
 
-class GPT_qkvgen(nn.Module):
+class GPT_QKVgen(nn.Module):
     def __init__(
         self,
         *,
@@ -18,7 +20,7 @@ class GPT_qkvgen(nn.Module):
 
         self.n_embd = embed_dim
     
-    def forward(self, input):
+    def forward(self, x):
 
         q,k,v = self.c_attn(x).split(self.n_embd, dim=1)
 
