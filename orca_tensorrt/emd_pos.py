@@ -5,7 +5,6 @@ from torch.nn import functional as F
 class GPT_Embedding(nn.Module):
     def __init__(
         self,
-        *,
         vocab_size,
         n_embd,
         n_positions
@@ -15,7 +14,8 @@ class GPT_Embedding(nn.Module):
         self.n_positions = n_positions
         self.token_emb = nn.Embedding(vocab_size, n_embd).to("cuda:0")
         self.pos_emb = nn.Embedding(n_positions, n_embd).to("cuda:0")
-
+        
+    @torch.no_grad()
     def forward(self, input, pos):
         # pos 그냥 input이랑 size 똑같은 dummy tensor 넣으면 됨.
         

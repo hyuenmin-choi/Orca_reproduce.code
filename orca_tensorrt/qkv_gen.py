@@ -5,7 +5,6 @@ from torch.nn import functional as F
 class GPT_QKVgen(nn.Module):
     def __init__(
         self,
-        *,
         embed_dim,):
 
         super().__init__()
@@ -19,9 +18,10 @@ class GPT_QKVgen(nn.Module):
         self.c_attn.apply(init_normal)
 
         self.n_embd = embed_dim
-    
+        
+    @torch.no_grad()
     def forward(self, x):
 
-        q,k,v = self.c_attn(x).split(self.n_embd, dim=1)
+        q, k, v = self.c_attn(x).split(self.n_embd, dim=1)
 
         return q, k, v
