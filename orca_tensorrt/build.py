@@ -44,24 +44,24 @@ class GPT_TRT():
         self.emd_model = torch_tensorrt.compile(emd_pos, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1,),
-                opt_shape=(128,),
-                max_shape=(512,), 
+                opt_shape=(8,),
+                max_shape=(16,), 
                 dtype=torch.int32), 
             torch_tensorrt.Input( # pos
                 min_shape=(1,),
-                opt_shape=(128,),
-                max_shape=(512,), 
+                opt_shape=(8,),
+                max_shape=(16,), 
                 dtype=torch.int32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
 
-        input = torch.tensor([15496,  2159,   318,  3666,  5181,   318], dtype=torch.int32, device='cuda:0')
-        pos = torch.tensor([0, 1, 2, 0, 1, 2], dtype=torch.int32, device='cuda:0')
+        input = torch.tensor([15496,  2159,   318,  3666,  5181,   318,  1324,  2342], dtype=torch.int32, device='cuda:0')
+        pos = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int32, device='cuda:0')
 
         # warm up
-        for _ in range(10):
+        for _ in range(30):
             self.emd_model(input, pos)
 
         # start = time.time()
@@ -76,8 +76,8 @@ class GPT_TRT():
         self.qkv_model = torch_tensorrt.compile(qkv_gen, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
@@ -85,7 +85,7 @@ class GPT_TRT():
         )
 
         # warm up
-        for _ in range(10):
+        for _ in range(30):
             self.qkv_model(output1)
 
         # start = time.time()
@@ -105,18 +105,18 @@ class GPT_TRT():
         self.attn_model = torch_tensorrt.compile(attn, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32),
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32),
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
@@ -124,28 +124,28 @@ class GPT_TRT():
         )
 
         # warm up
-        for _ in range(10):
+        for _ in range(30):
             self.attn_model(*output2)
 
         # projection
         self.proj_model = torch_tensorrt.compile(attn_proj, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32),
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
 
-        output3 = torch.empty((6, self.config_ours['n_embd']), device="cuda:0")
-        for _ in range(10):
+        output3 = torch.empty((8, self.config_ours['n_embd']), device="cuda:0")
+        for _ in range(30):
             self.proj_model(output3, output1)
 
         # start = time.time()
@@ -157,8 +157,8 @@ class GPT_TRT():
         self.out_model = torch_tensorrt.compile(out_gen, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(128, self.config_ours['n_embd']),
-                max_shape=(512, self.config_ours['n_embd']), 
+                opt_shape=(8, self.config_ours['n_embd']),
+                max_shape=(16, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
@@ -166,7 +166,7 @@ class GPT_TRT():
         )
 
         # warm up
-        for _ in range(10):
+        for _ in range(30):
             self.out_model(output4)
 
         # start = time.time()
@@ -177,11 +177,10 @@ class GPT_TRT():
     def forward(self, input, pos):
 
         layer = self.config_ours["n_layer"]
-        batch_size = 1
         
         res = self.emd_model(input, pos)
-        for i in range(layer):
-            start = time.time()
+        for _ in range(layer):
+            # start = time.time()
             q, k, v= self.qkv_model(res)
             ## cache processing
             # k = torch.concat([torch.rand(cache_num,, self.n_embd, device='cuda:0'), k])
@@ -191,26 +190,28 @@ class GPT_TRT():
             # attn = attn[cache_num:,:]
             ## attention post-processing
             proj_res = self.proj_model(res, attn)
-            res = res + proj_res
-            end = time.time()
-            print(f"layer{i} : {(end-start)*1000}")
+            res = torch.add(res, proj_res)
+            # end = time.time()
+            # print(f"layer{i} : {(end-start)*1000}")
             # print(res)
         
         logits = self.out_model(res)
         ## post-processing of logits
-        new_token = logits[-1]/1.0
-        probs = torch.nn.functional.softmax(new_token, dim = -1)
-        new_token_idx = torch.argmax(probs, dim = -1)
+        new_token = logits[-1].view(-1, 50257)
+        # print(new_token.shape)
+        probs = torch.nn.functional.softmax(new_token, dim = 1)
+        new_token_idx = torch.argmax(probs, dim = 1)
 
-        return new_token_idx.view(batch_size, 1).to("cpu")
+        return new_token_idx.view(-1, 1)
 
 if __name__ == "__main__":
     our_model = GPT_TRT()
-    # input = torch.tensor([15496,  2159,   318,  3666,  5181,   318], dtype=torch.int32, device='cuda:0')
-    input = torch.tensor([15496], dtype=torch.int32, device='cuda:0')
-    # pos = torch.tensor([0, 1, 2, 3, 4, 5], dtype=torch.int32, device='cuda:0')
-    pos = torch.tensor([0], dtype=torch.int32, device='cuda:0')
+    input = torch.tensor([15496,  2159,   318,  3666,  5181,   318,   437,  7777], dtype=torch.int32, device='cuda:0')
+    # input = torch.tensor([15496], dtype=torch.int32, device='cuda:0')
+    pos = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int32, device='cuda:0')
+    # pos = torch.tensor([0], dtype=torch.int32, device='cuda:0')
     start = time.time()
-    output = our_model.forward(input, pos)
+    for _ in range(32):
+        output = our_model(input, pos)
     end = time.time()
-    print("total", (end - start)*1000)
+    print("total :", (end - start)*1000)
