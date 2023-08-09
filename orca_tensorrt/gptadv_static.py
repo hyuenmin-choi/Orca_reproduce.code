@@ -44,18 +44,23 @@ class SelectiveAttention(nn.Module):
                                      .view(1, 1, self.n_pos, self.n_pos))
         
     # @torch.no_grad()
-    def forward(self, q, k ,v):
+    def forward(self, q, k ,v, q_c, k_c, v_c):
         """
         여기서 caching은 In-sentence caching임. Not prompt caching
         """
 
-        cache_num = 32
+        cache_num = 64
 
         # assume that assessing cache is just ignorable
         # TensorRT: No torch.rand() 
-        k = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), k])
-        q = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), q])
-        v = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), v])
+        # k = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), k])
+        # q = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), q])
+        # v = torch.concat([torch.ones(cache_num, self.n_embd, device="cuda:0"), v])
+
+        k = torch.concat([k_c, k])
+        q = torch.concat([q_c, q])
+        v = torch.concat([v_c, v])
+
 
         k = k.view(-1, self.n_head, self.n_embd//self.n_head).transpose(0, 1) # (nh, T, hs)
         q = q.view(-1, self.n_head, self.n_embd//self.n_head).transpose(0, 1) # (nh, T, hs)
@@ -113,14 +118,14 @@ class CausalSelfAttention(nn.Module):
         # self.replicas = nn.parallel.replicate(self.sel_attn, self.device_ids)
 
     @torch.no_grad()    
-    def forward(self, x):
+    def forward(self, x, q_c, k_c, v_c):
         # X size : (1, n_embd)
         # T, C = x.size() # total length, embedding dimensionality (n_embd)
         
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         q, k ,v  = self.c_attn(x).split(self.n_embd, dim=1)
 
-        y = self.sel_attn(q, k ,v)
+        y = self.sel_attn(q, k ,v, q_c, k_c, v_c)
         
         y = self.c_proj(y)
         return y
@@ -157,10 +162,10 @@ class Block(nn.Module):
         ).to("cuda:0")
         
     @torch.no_grad()
-    def forward(self, x):
+    def forward(self, x, q_c, k_c, v_c):
 
         x_ = self.ln_1(x)  # (total_tokens, n_embd)  
-        attn_out = self.attention(x_) # (total_tokens, n_embd)
+        attn_out = self.attention(x_, q_c, k_c, v_c) # (total_tokens, n_embd)
         x = x + attn_out  # (total_tokens, n_embd)
         x = x + self.mlp(self.ln_2(x))  # (batch_size, n_tokens, n_embd)
 
@@ -208,7 +213,7 @@ class GPT(nn.Module):
         self.eos = 50256
 
     # @torch.no_grad()
-    def forward(self, idx, pos):
+    def forward(self, idx, pos, q_c, k_c, v_c):
         """
         Example
 
@@ -231,7 +236,7 @@ class GPT(nn.Module):
         # x = self.blocks(x, length, info)  # (total_tokens, n_embd)
 
         for layer in self.blocks:
-            x = layer(x)
+            x = layer(x, q_c, k_c, v_c)
 
         x = self.ln(x)  # (total_tokens, n_embd)
         logits = self.head(x)  # (total_tokens, vocab_size)
@@ -279,7 +284,16 @@ if __name__ == "__main__":
             min_shape=(1,),
             opt_shape=(8,),
             max_shape=(16,), 
-            dtype=torch.int32)],
+            dtype=torch.int32),
+        torch_tensorrt.Input( # cache
+            shape=(64, config_ours['n_embd']),
+            dtype=torch.float32),
+        torch_tensorrt.Input( # cache
+            shape=(64, config_ours['n_embd']),
+            dtype=torch.float32),
+        torch_tensorrt.Input( # cache
+            shape=(64, config_ours['n_embd']),
+            dtype=torch.float32)],
         enabled_precisions = torch.float32, # Run with FP32
         workspace_size = 1 << 33,
         require_full_compilation = True
@@ -290,15 +304,19 @@ if __name__ == "__main__":
     pos1 = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int32, device='cuda:0')
     pos2 = torch.tensor([0], dtype=torch.int32, device='cuda:0')
 
+    q_c = torch.rand((64, config_ours['n_embd']), dtype=torch.float32, device='cuda:0')
+    k_c = torch.rand((64, config_ours['n_embd']), dtype=torch.float32, device='cuda:0')
+    v_c = torch.rand((64, config_ours['n_embd']), dtype=torch.float32, device='cuda:0')
+
     # warm up
     for _ in range(30):
-        trt_model(input1, pos1)
-        trt_model(input2, pos2)
+        trt_model(input1, pos1, q_c, k_c, v_c)
+        trt_model(input2, pos2, q_c, k_c, v_c)
 
     start = time.time()
-    output = trt_model(input1, pos1)
+    output = trt_model(input1, pos1, q_c, k_c, v_c)
     for _ in range(31):
-        output = trt_model(output[0], pos2)
+        output = trt_model(output[0], pos2, q_c, k_c, v_c)
     end = time.time()
     print("output :", output)
     print("total :", (end - start)*1000)

@@ -10,6 +10,8 @@ from out_gen import GPT_Output
 from qkv_gen import GPT_QKVgen
 import time
 
+iter_time = 0.285 * 37
+
 class GPT_TRT():
     def __init__(self):
         super().__init__()# model config
@@ -44,152 +46,154 @@ class GPT_TRT():
         self.emd_model = torch_tensorrt.compile(emd_pos, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1,),
-                opt_shape=(8,),
-                max_shape=(16,), 
+                opt_shape=(512,),
+                max_shape=(1024,), 
                 dtype=torch.int32), 
             torch_tensorrt.Input( # pos
                 min_shape=(1,),
-                opt_shape=(8,),
-                max_shape=(16,), 
+                opt_shape=(512,),
+                max_shape=(1024,), 
                 dtype=torch.int32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
 
-        input = torch.tensor([15496,  2159,   318,  3666,  5181,   318,  1324,  2342], dtype=torch.int32, device='cuda:0')
-        pos = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int32, device='cuda:0')
+        # torch.save(self.emd_model, "emb_model")
+        # self.emd_model = torch.load("emb_model")
+
+        input1 = torch.tensor([15496], dtype=torch.int32, device='cuda:0')
+        pos1 = torch.tensor([0], dtype=torch.int32, device='cuda:0')
+        input2 = torch.tensor([15496 * 1024], dtype=torch.int32, device='cuda:0')
+        pos2 = torch.tensor([0 * 1024], dtype=torch.int32, device='cuda:0')
 
         # warm up
         for _ in range(30):
-            self.emd_model(input, pos)
+            self.emd_model(input1, pos1)
+            self.emd_model(input2, pos2)
 
-        # start = time.time()
-        output1 = self.emd_model(input, pos)
-        # end = time.time()
-        # print("emb", (end-start)*1000)
-
-        # print(output1)
-        # print(output1.shape)
-
-        # qkv generation
         self.qkv_model = torch_tensorrt.compile(qkv_gen, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
 
+        # torch.save(self.qkv_model, "qkv_model")
+        # self.qkv_model = torch.load("qkv_model")
+
+        input3 = torch.cuda.FloatTensor(1, self.config_ours['n_embd'])
+        input4 = torch.cuda.FloatTensor(1024, self.config_ours['n_embd'])
+
         # warm up
         for _ in range(30):
-            self.qkv_model(output1)
+            self.qkv_model(input3)
+            self.qkv_model(input4)
 
-        # start = time.time()
-        output2 = self.qkv_model(output1)
-        # end = time.time()
-        # print("qkv", (end-start)*1000)
-
-        # print(output2) # output is tuple
-        # print(output2[0].shape)
-        # print(output2[1].shape)
-        # print(output2[2].shape)
-
-        # attatch cache
-
-
-        # attention
         self.attn_model = torch_tensorrt.compile(attn, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32),
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32),
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
 
+        # torch.save(self.attn_model, "attn_model")
+        # self.attn_model = torch.load("attn_model")
+
+
+        q1 = torch.cuda.FloatTensor(1, self.config_ours['n_embd'])
+        k1 = torch.cuda.FloatTensor(1, self.config_ours['n_embd'])
+        v1 = torch.cuda.FloatTensor(1, self.config_ours['n_embd'])
+
+        q2 = torch.cuda.FloatTensor(1024, self.config_ours['n_embd'])
+        k2 = torch.cuda.FloatTensor(1024, self.config_ours['n_embd'])
+        v2 = torch.cuda.FloatTensor(1024, self.config_ours['n_embd'])
+
         # warm up
-        for _ in range(30):
-            self.attn_model(*output2)
+        for i in range(30):
+            self.attn_model(q1, k1, v1)
+            self.attn_model(q2, k2, v2)
 
         # projection
         self.proj_model = torch_tensorrt.compile(attn_proj, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32),
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
 
-        output3 = torch.empty((8, self.config_ours['n_embd']), device="cuda:0")
-        for _ in range(30):
-            self.proj_model(output3, output1)
+        # torch.save(self.proj_model, "proj_model")
+        # self.proj_model = torch.load("proj_model")
 
-        # start = time.time()
-        output4 = self.proj_model(output3, output1)
-        # end = time.time()
-        # print("proj", (end-start)*1000)
+        for _ in range(30):
+            self.proj_model(input3, input3)
+            self.proj_model(input4, input4)
 
         # logits
         self.out_model = torch_tensorrt.compile(out_gen, inputs = [
             torch_tensorrt.Input( # concated input
                 min_shape=(1, self.config_ours['n_embd']),
-                opt_shape=(8, self.config_ours['n_embd']),
-                max_shape=(16, self.config_ours['n_embd']), 
+                opt_shape=(512, self.config_ours['n_embd']),
+                max_shape=(1024, self.config_ours['n_embd']), 
                 dtype=torch.float32)],
             enabled_precisions = torch.float32, # Run with FP32
             workspace_size = 1 << 33,
             require_full_compilation = True
         )
+        
+        # torch.save(self.out_model, "out_model")
+        # self.out_model = torch.load("out_model")
 
         # warm up
         for _ in range(30):
-            self.out_model(output4)
+            self.out_model(input3)
+            self.out_model(input4)
 
-        # start = time.time()
-        logits = self.out_model(output4)
-        # end = time.time()
-        # print("out", (end-start)*1000)
 
-    def forward(self, input, pos):
+    def forward(self, input, pos, cache_num, index):
 
         layer = self.config_ours["n_layer"]
         
         res = self.emd_model(input, pos)
         for _ in range(layer):
             # start = time.time()
-            q, k, v= self.qkv_model(res)
+            q, k, v = self.qkv_model(res)
             ## cache processing
-            # k = torch.concat([torch.rand(cache_num,, self.n_embd, device='cuda:0'), k])
-            # q = torch.concat([torch.rand(cache_num,, self.n_embd, device='cuda:0'), q])
-            # v = torch.concat([torch.rand(cache_num, self.n_embd, device='cuda:0'), v])            
+            ## cache num : max cache + input length
+            q = torch.cuda.FloatTensor(cache_num, self.config_ours['n_embd'])
+            k = torch.cuda.FloatTensor(cache_num, self.config_ours['n_embd'])
+            v = torch.cuda.FloatTensor(cache_num, self.config_ours['n_embd'])
             attn = self.attn_model(q, k, v)
             # attn = attn[cache_num:,:]
             ## attention post-processing
-            proj_res = self.proj_model(res, attn)
+            proj_res = self.proj_model(res, res)
             res = torch.add(res, proj_res)
             # end = time.time()
             # print(f"layer{i} : {(end-start)*1000}")
@@ -197,7 +201,7 @@ class GPT_TRT():
         
         logits = self.out_model(res)
         ## post-processing of logits
-        new_token = logits[-1].view(-1, 50257)
+        new_token = logits[index].view(-1, 50257)
         # print(new_token.shape)
         probs = torch.nn.functional.softmax(new_token, dim = 1)
         new_token_idx = torch.argmax(probs, dim = 1)
@@ -205,13 +209,17 @@ class GPT_TRT():
         return new_token_idx.view(-1, 1)
 
 if __name__ == "__main__":
-    our_model = GPT_TRT()
-    input = torch.tensor([15496,  2159,   318,  3666,  5181,   318,   437,  7777], dtype=torch.int32, device='cuda:0')
-    # input = torch.tensor([15496], dtype=torch.int32, device='cuda:0')
-    pos = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int32, device='cuda:0')
-    # pos = torch.tensor([0], dtype=torch.int32, device='cuda:0')
+    model = GPT_TRT()
+    input1 = torch.tensor([15496,  2159,   318,  3666,  5181,   318,   437,  7777], dtype=torch.int32, device='cuda:0')
+    input2 = torch.tensor([15496], dtype=torch.int32, device='cuda:0')
+    pos1 = torch.tensor([0, 1, 2, 3, 4, 5, 6, 7], dtype=torch.int32, device='cuda:0')
+    pos2 = torch.tensor([0], dtype=torch.int32, device='cuda:0')
+    index1 = torch.tensor([7], dtype=torch.int32, device='cuda:0')
+    index2 = torch.tensor([0], dtype=torch.int32, device='cuda:0')
     start = time.time()
-    for _ in range(32):
-        output = our_model(input, pos)
+    output = model.forward(input1, pos1, 8, index1)
+    for i in range(32):
+        output = model.forward(input2, pos2, 9 + i, index2)
     end = time.time()
-    print("total :", (end - start)*1000)
+    # global iter_time
+    print("total :", (end - start)*1000 - iter_time * 32)
