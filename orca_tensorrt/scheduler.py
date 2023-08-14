@@ -16,7 +16,7 @@ iter_time = 0.285 * 37 * 0.001
 class Request:
     def __init__(self, input_ids, output_len, user_id):
         
-        if (isinstance(input_ids, int)):
+        if isinstance(input_ids, int):
             # print("integer")
             self.input_ids = torch.randint(1, 50255, (1, input_ids), dtype=torch.int32, device="cuda:0")
             # print(self.input_ids)
@@ -35,14 +35,14 @@ class Request:
 
 
 class Scheduler:
-    def __init__(self, model, tokenizer, max_batch_size, batching_delay, req_num):
+    def __init__(self, model, tokenizer, max_batch_size, req_num):
         self.model = model
         self.tokenizer = tokenizer
         self.pool = PriorityQueue()
         # self.running = PriorityQueue() 우리는 한개의 GPU사용 가정
         self.finish = PriorityQueue()
 
-        self.batching_delay = batching_delay
+        # self.batching_delay = batching_delay
         self.max_batch_size = max_batch_size
         
         self.total_req = 0
@@ -79,10 +79,13 @@ class Scheduler:
         max_len = 1
         # batching에 들어갈 input 확인
         # print("Waiting For Batching")
+        self.batching_delay = 0.0001
         while batch_size < self.max_batch_size and time.time() - current_time < self.batching_delay:
+        # while batch_size < self.max_batch_size:
             # print("Batching...")
             if self.pool.empty():
                 continue
+                # break # batching delay를 제거, 빈 경우 그냥 진행
             request = self.pool.get()
 
             # 처음 들어오는 token
@@ -167,7 +170,11 @@ class Scheduler:
             # print(request.output_length)
             # print("res_time", response_time)
             # print("req_time", request.req_time)
-            self.test.append(response_time - request.req_time)
+
+            ################################ ONLY FOR TESTING ######################################
+            # self.test.append(response_time - request.req_time - (iter_time * request.output_length))
+            ########################################################################################
+
             self.norm_latency += (response_time - request.req_time - (iter_time * request.output_length))/request.output_length
             self.done += 1
             self.latency += (response_time - request.req_time - (iter_time * request.output_length))
@@ -201,19 +208,19 @@ if __name__ == "__main__":
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
 
-    scheduler = Scheduler(model_ours, tokenizer, 2, 0.001)
+    scheduler = Scheduler(model_ours, tokenizer, 1, 1)
 
     dummy_input1 = tokenizer(["Hello World is"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0").int()
     dummy_input2 = tokenizer(["My Cat is"], return_tensors="pt", padding = "longest")["input_ids"].to("cuda:0").int()
 
-    dummy_req1 = Request(dummy_input1, 10, 1)
+    dummy_req1 = Request(dummy_input1, 32, 1)
     dummy_req2 = Request(dummy_input2, 5, 2)
 
 
     # print(dummy_req1.input_ids.shape[1])
 
     scheduler.addRequest(dummy_req1)
-    scheduler.addRequest(dummy_req2)
+    # scheduler.addRequest(dummy_req2)
 
     scheduler.schedule()
     scheduler.schedule()
@@ -226,5 +233,30 @@ if __name__ == "__main__":
     scheduler.schedule()
     scheduler.schedule() #10 request1 should be end
 
-    for i, laten in enumerate(scheduler.test):
-        print(laten*1000 - (iter_time*5*(i+1)))
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+    scheduler.schedule()
+
+    scheduler.schedule()
+    scheduler.schedule()
+
+    for laten in scheduler.test:
+        print(laten*1000)

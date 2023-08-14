@@ -218,8 +218,8 @@ if __name__ == "__main__":
     index2 = torch.tensor([0], dtype=torch.int32, device='cuda:0')
     start = time.time()
     output = model.forward(input1, pos1, 8, index1)
-    for i in range(32):
+    for i in range(31):
         output = model.forward(input2, pos2, 9 + i, index2)
     end = time.time()
     # global iter_time
-    print("total :", (end - start)*1000 - iter_time * 32)
+    print("total :", (end - start)*1000 - iter_time * 31)
